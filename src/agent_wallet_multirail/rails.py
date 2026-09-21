@@ -182,10 +182,49 @@ class SkyfireRail(PaymentRail):
         )
 
 
+class PaymanRail(PaymentRail):
+    """Payman (paymanai.com): a payments API for AI agents sending money to humans.
+
+    Payman lets an AI agent instruct payments to real people/accounts. It is a
+    platform/API rail (its public SDK was paykit; the company remains live).
+    It charges a processing fee. Modeled here as a third-party platform rail a
+    wallet SDK might already connect; a Nano rail behind the same interface is
+    additive.
+    """
+
+    name = "payman-api"
+
+    def __init__(self, fee_pct: float = 0.05):
+        self._fee_pct = fee_pct
+        self._finality_s = 1.5
+        super().__init__()
+
+    def quote(self, amount_usd: float) -> Quote:
+        fee = round(amount_usd * self._fee_pct, 6)
+        return Quote(
+            rail=self.name,
+            amount_usd=amount_usd,
+            fee_usd=fee,
+            finality_s=self._finality_s,
+            currency="USD",
+        )
+
+    def pay(self, quote: Quote) -> Settlement:
+        return Settlement(
+            rail=self.name,
+            amount_usd=quote.amount_usd,
+            fee_usd=quote.fee_usd,
+            settled=True,
+            tx_ref=f"payman-{int(time.time())}",
+            meta={"finality_s": self._finality_s},
+        )
+
+
 _REGISTRY: Dict[str, PaymentRail] = {
     NanoRail.name: NanoRail(),
     UsdcRail.name: UsdcRail(),
     SkyfireRail.name: SkyfireRail(),
+    PaymanRail.name: PaymanRail(),
 }
 
 

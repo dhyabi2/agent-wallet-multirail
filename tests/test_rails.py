@@ -8,6 +8,7 @@ sys.path.insert(0, "examples")
 from agent_wallet_multirail.rails import (
     NanoRail,
     PaymentRail,
+    PaymanRail,
     Quote,
     SkyfireRail,
     UsdcRail,
@@ -66,6 +67,15 @@ def test_third_rail_skyfire_is_fee_charging():
     r = settle("skyfire-usd", 1.0)
     assert r.rail == "skyfire-usd"
     assert r.tx_ref.startswith("skyfire-")
+
+
+def test_fourth_rail_payman_is_fee_charging():
+    q = PaymanRail().quote(1.0)
+    assert q.fee_usd > 0
+    assert q.currency == "USD"
+    r = settle("payman-api", 1.0)
+    assert r.rail == "payman-api"
+    assert r.tx_ref.startswith("payman-")
 
 
 def test_nano_rpc_seam_is_honest(monkeypatch):
