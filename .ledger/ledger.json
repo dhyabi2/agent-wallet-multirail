@@ -34,10 +34,81 @@
    "grounding": "oracle",
    "version": 2,
    "minted": "2026-09-21T05:54:47+00:00"
+  },
+  {
+   "id": "L2",
+   "block": 2.0,
+   "statement": "The example settles the same payment on any named rail via the shared helper",
+   "test": "Running the example on each rail prints a settled=False? No - a successful Settlement with the rail name",
+   "scope": [
+    "examples/**"
+   ],
+   "oracle": "cd /root/work/agent-wallet-multirail && . .venv/bin/activate && python3 examples/pay_on_any_rail.py usdc-evm 2>&1 | grep -q 'rail      : usdc-evm' && python3 examples/pay_on_any_rail.py 2>&1 | grep -q 'settled   : True' && echo EX-OK",
+   "expect": "EX-OK",
+   "source": null,
+   "grounding": "oracle",
+   "version": 1,
+   "minted": "2026-09-21T06:01:05+00:00"
+  },
+  {
+   "id": "L3",
+   "block": 2.0,
+   "statement": "The test suite covers both rails the dispatch and the rpc seam",
+   "test": "Running pytest reports all tests passed",
+   "scope": [
+    "tests/**"
+   ],
+   "oracle": "cd /root/work/agent-wallet-multirail && . .venv/bin/activate && python -m pytest -q 2>&1 | grep -q '7 passed' && echo TESTS-OK",
+   "expect": "TESTS-OK",
+   "source": null,
+   "grounding": "oracle",
+   "version": 1,
+   "minted": "2026-09-21T06:01:36+00:00"
   }
  ],
  "blocks": {
   "1": {
+   "status": "pass",
+   "attempts": [
+    {
+     "kind": "verify",
+     "ok": true,
+     "refusable": true,
+     "results": [
+      {
+       "id": "L0",
+       "pass": true,
+       "oracle_exit": 0,
+       "oracle_ok": true,
+       "mutants": {
+        "total": 0,
+        "killed": 0
+       },
+       "judge": "deepseek/deepseek-v4-flash-0731",
+       "control": "passed"
+      },
+      {
+       "id": "L1",
+       "pass": true,
+       "oracle_exit": 0,
+       "oracle_ok": true,
+       "mutants": {
+        "total": 0,
+        "killed": 0
+       },
+       "judge": "deepseek/deepseek-v4-flash-0731",
+       "control": "passed"
+      }
+     ],
+     "pre_sig": "7edd224c20ab9a58b432df4d63a8c10a90ff62b57c881eec55b49b3632f49e3a",
+     "tier": "cheap",
+     "coverage_gaps": [],
+     "injection": [],
+     "at": "2026-09-21T06:00:31+00:00"
+    }
+   ]
+  },
+  "2": {
    "status": "pending",
    "attempts": []
   }
@@ -88,6 +159,38 @@
    "at": "2026-09-21T05:56:13+00:00",
    "prev": "26ab17ea929347ab14f73cd2d9652499633df90601763726f1711b2e95809cf9",
    "receipt": "db09b8ee9874b3d2da4374b11f169bf3024b07dc5acd9eb8e4732b711073332d"
+  },
+  {
+   "kind": "verify",
+   "payload": {
+    "block": "1",
+    "ok": true
+   },
+   "at": "2026-09-21T06:00:31+00:00",
+   "prev": "db09b8ee9874b3d2da4374b11f169bf3024b07dc5acd9eb8e4732b711073332d",
+   "receipt": "2b707b3e90b90e83026209f83279373d57ac6fb8459cb965b24f6b2b72d9cd19"
+  },
+  {
+   "kind": "mint",
+   "payload": {
+    "id": "L2",
+    "block": "2",
+    "statement_sha": "5d91815f11b455967fa7cfee1390752c018b53ad9946cd9cd83d5c464c4a755d"
+   },
+   "at": "2026-09-21T06:01:05+00:00",
+   "prev": "2b707b3e90b90e83026209f83279373d57ac6fb8459cb965b24f6b2b72d9cd19",
+   "receipt": "3f35b8b27efaa0f2985fa942a124c231cf7a534b3677e9c0f3c0fc30c5f1d3ab"
+  },
+  {
+   "kind": "mint",
+   "payload": {
+    "id": "L3",
+    "block": "2",
+    "statement_sha": "b03ab969d675112261919f9cf30dcc293c664584013a6f763b11e93dc37e2638"
+   },
+   "at": "2026-09-21T06:01:36+00:00",
+   "prev": "3f35b8b27efaa0f2985fa942a124c231cf7a534b3677e9c0f3c0fc30c5f1d3ab",
+   "receipt": "a4e37dc705527622475cff943b551539323f0fab498bf7e796cfdea68e8b0099"
   }
  ]
 }
