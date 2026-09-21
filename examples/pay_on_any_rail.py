@@ -27,6 +27,8 @@ def main() -> None:
 
     # Which rail to settle on this run (default: the feeless one).
     pick = sys.argv[1] if len(sys.argv) > 1 else "nano-xno"
+    if pick == "--all-rails":
+        return _all_rails()
     if pick not in rails:
         raise SystemExit(f"unknown rail '{pick}'; choose from {rails}")
 
@@ -59,6 +61,18 @@ def main() -> None:
         print("\n  Nano rail settled feeless and sub-second (no gas, no freezeable stablecoin).")
     else:
         print("\n  USDC rail settled with a processing fee + EVM gas.")
+
+
+def _all_rails() -> None:
+    """Settle the same amount on every rail and report each result."""
+    rails = ["nano-xno", "usdc-evm"]
+    amount_usd = 1.00
+    print("-- settling $1.00 on every rail --")
+    for name in rails:
+        q = rail_for(name).quote(amount_usd)
+        r = settle(name, q.amount_usd)
+        print(f"SETTLED_ON:{r.rail} FEE_USD:{r.fee_usd:.6f} FINALITY_S:{q.finality_s}")
+    print("OK")
 
 
 if __name__ == "__main__":
