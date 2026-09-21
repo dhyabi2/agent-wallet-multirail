@@ -39,7 +39,7 @@
    "id": "L2",
    "block": 2.0,
    "statement": "The example settles the same payment on any named rail via the shared helper",
-   "test": "Running the example on each rail prints a settled=False? No - a successful Settlement with the rail name",
+   "test": "Running the example on a named rail prints that rail and a settled True result",
    "scope": [
     "examples/**"
    ],
@@ -47,7 +47,7 @@
    "expect": "EX-OK",
    "source": null,
    "grounding": "oracle",
-   "version": 1,
+   "version": 2,
    "minted": "2026-09-21T06:01:05+00:00"
   },
   {
@@ -110,7 +110,70 @@
   },
   "2": {
    "status": "pending",
-   "attempts": []
+   "attempts": [
+    {
+     "kind": "verify",
+     "ok": false,
+     "refusable": true,
+     "results": [
+      {
+       "id": "L0",
+       "pass": true,
+       "oracle_exit": 0,
+       "oracle_ok": true,
+       "mutants": {
+        "total": 0,
+        "killed": 0
+       },
+       "cached": true,
+       "judge": "deepseek/deepseek-v4-flash-0731",
+       "control": "passed"
+      },
+      {
+       "id": "L1",
+       "pass": true,
+       "oracle_exit": 0,
+       "oracle_ok": true,
+       "mutants": {
+        "total": 0,
+        "killed": 0
+       },
+       "cached": true,
+       "judge": "deepseek/deepseek-v4-flash-0731",
+       "control": "passed"
+      },
+      {
+       "id": "L2",
+       "pass": false,
+       "oracle_exit": 0,
+       "oracle_ok": true,
+       "mutants": {
+        "total": 0,
+        "killed": 0
+       },
+       "judge": "deepseek/deepseek-v4-flash-0731",
+       "control": "passed"
+      },
+      {
+       "id": "L3",
+       "pass": true,
+       "oracle_exit": 0,
+       "oracle_ok": true,
+       "mutants": {
+        "total": 0,
+        "killed": 0
+       },
+       "judge": "deepseek/deepseek-v4-flash-0731",
+       "control": "passed"
+      }
+     ],
+     "pre_sig": "fc7ec9b093dcd11c6297ea6796cc79bf339c5ad475eee130a148b7010509d381",
+     "tier": "cheap",
+     "coverage_gaps": [],
+     "injection": [],
+     "at": "2026-09-21T06:02:56+00:00"
+    }
+   ]
   }
  },
  "deltas": [],
@@ -191,6 +254,26 @@
    "at": "2026-09-21T06:01:36+00:00",
    "prev": "3f35b8b27efaa0f2985fa942a124c231cf7a534b3677e9c0f3c0fc30c5f1d3ab",
    "receipt": "a4e37dc705527622475cff943b551539323f0fab498bf7e796cfdea68e8b0099"
+  },
+  {
+   "kind": "verify",
+   "payload": {
+    "block": "2",
+    "ok": false
+   },
+   "at": "2026-09-21T06:02:56+00:00",
+   "prev": "a4e37dc705527622475cff943b551539323f0fab498bf7e796cfdea68e8b0099",
+   "receipt": "28417d3d795641fd6c0f35c554054cd0c06c487f3d5463a1313eb45d5284be53"
+  },
+  {
+   "kind": "amend",
+   "payload": {
+    "id": "L2",
+    "version": 2
+   },
+   "at": "2026-09-21T06:03:39+00:00",
+   "prev": "28417d3d795641fd6c0f35c554054cd0c06c487f3d5463a1313eb45d5284be53",
+   "receipt": "8a6ef0fa04a7dbe5b4f43712d5cecc081b18acb43734ccea84035d8e0f61f74a"
   }
  ]
 }
