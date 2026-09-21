@@ -1,0 +1,164 @@
+"""The multi-rail PaymentRail interface and its two shipped rails.
+
+Purpose: show that an agent-wallet SDK can let an agent settle the *same*
+x402-priced payment on either of two rails through one interface. This is the
+"documented adapter with a working example" shape that the prepared first
+contacts to agent-wallet SDKs (Coinbase AgentKit, Crossmint, Skyfire, Payman,
+Nevermined, 0xgasless, Trust Wallet) propose.
+
+The payments below are simulated against a local stub so the repository runs
+with no wallet and no keys. The seam a real SDK would wire up is documented:
+``NanoRail`` accepts an optional ``rpc`` callable; point it at a real Nano RPC
+(or wrap the existing Nano x402 client, e.g. feeless402 / x402nano-exact) to
+settle a real, feeless, sub-second XNO transfer.
+"""
+from __future__ import annotations
+
+import time
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from typing import Callable, Dict
+
+
+@dataclass
+class Quote:
+    """A quote to settle one payment on one rail."""
+
+    rail: str
+    amount_usd: float
+    fee_usd: float
+    finality_s: float
+    currency: str
+
+    def as_dict(self) -> Dict[str, object]:
+        return {
+            "rail": self.rail,
+            "amount_usd": self.amount_usd,
+            "fee_usd": self.fee_usd,
+            "finality_s": self.finality_s,
+            "currency": self.currency,
+        }
+
+
+@dataclass
+class Settlement:
+    """The outcome of settling a quote on a rail."""
+
+    rail: str
+    amount_usd: float
+    fee_usd: float
+    settled: bool
+    tx_ref: str = ""
+    meta: Dict[str, object] = field(default_factory=dict)
+
+
+class PaymentRail(ABC):
+    """One settlement rail an agent can pay on."""
+
+    name: str = "abstract"
+
+    @abstractmethod
+    def quote(self, amount_usd: float) -> Quote:
+        """Return what settling `amount_usd` costs and how long it takes."""
+
+    @abstractmethod
+    def pay(self, quote: Quote) -> Settlement:
+        """Settle the quote and return its outcome and a tx reference."""
+
+
+class NanoRail(PaymentRail):
+    """Nano (XNO): feeless per transfer, sub-second finality, self-custody.
+
+    ``rpc`` is an optional callable stub so tests and examples run offline. A
+    real integration would pass a client that performs an actual XNO transfer
+    (self-custodial, feeless) and returns on finality.
+    """
+
+    name = "nano-xno"
+
+    def __init__(self, rpc: Callable[[Dict[str, object]], Dict[str, object]] | None = None):
+        # nano is feeless: no per-tx network fee, no gas.
+        self._fee_usd = 0.0
+        # nano finality is sub-second (~<0.3s typical open representative
+        # voting confirmation).
+        self._finality_s = 0.3
+        self._rpc = rpc or (lambda req: {"block": f"sim-{int(time.time())}", "confirmed": True})
+        super().__init__()
+
+    def quote(self, amount_usd: float) -> Quote:
+        return Quote(
+            rail=self.name,
+            amount_usd=amount_usd,
+            fee_usd=self._fee_usd,
+            finality_s=self._finality_s,
+            currency="XNO",
+        )
+
+    def pay(self, quote: Quote) -> Settlement:
+        # Simulated settlement: ask the provided rpc to make the transfer and
+        # report the confirmed block. A real rail would submit the signed XNO
+        # block and wait for confirmation.
+        resp = self._rpc({"action": "send", "amount_usd": quote.amount_usd})
+        return Settlement(
+            rail=self.name,
+            amount_usd=quote.amount_usd,
+            fee_usd=self._fee_usd,
+            settled=bool(resp.get("confirmed", True)),
+            tx_ref=str(resp.get("block", "")),
+            meta={"finality_s": self._finality_s},
+        )
+
+
+class UsdcRail(PaymentRail):
+    """Stablecoin (USDC on EVM/Base): the status-quo rail, with a fee + gas."""
+
+    name = "usdc-evm"
+
+    def __init__(self, fee_pct: float = 0.01, gas_usd: float = 0.05):
+        # a small protocol/processing fee plus EVM network gas per transfer.
+        self._fee_pct = fee_pct
+        self._gas_usd = gas_usd
+        # EVM layer-2 finality of a base/L2 block: a few seconds.
+        self._finality_s = 3.0
+        super().__init__()
+
+    def quote(self, amount_usd: float) -> Quote:
+        fee = round(amount_usd * self._fee_pct + self._gas_usd, 6)
+        return Quote(
+            rail=self.name,
+            amount_usd=amount_usd,
+            fee_usd=fee,
+            finality_s=self._finality_s,
+            currency="USDC",
+        )
+
+    def pay(self, quote: Quote) -> Settlement:
+        # Simulated settlement on the EVM rail.
+        return Settlement(
+            rail=self.name,
+            amount_usd=quote.amount_usd,
+            fee_usd=quote.fee_usd,
+            settled=True,
+            tx_ref=f"0xsim-{int(time.time())}",
+            meta={"finality_s": self._finality_s},
+        )
+
+
+_REGISTRY: Dict[str, PaymentRail] = {
+    NanoRail.name: NanoRail(),
+    UsdcRail.name: UsdcRail(),
+}
+
+
+def rail_for(name: str) -> PaymentRail:
+    """Return the rail registered under `name` (e.g. 'nano-xno' or 'usdc-evm')."""
+    try:
+        return _REGISTRY[name]
+    except KeyError:
+        raise KeyError(f"unknown rail '{name}'; known: {sorted(_REGISTRY)}") from None
+
+
+def settle(name: str, amount_usd: float) -> Settlement:
+    """One-call helper: quote then settle `amount_usd` on the named rail."""
+    rail = rail_for(name)
+    return rail.pay(rail.quote(amount_usd))

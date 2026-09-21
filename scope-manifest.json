@@ -1,0 +1,16 @@
+{
+  "project": "agent-wallet-multirail",
+  "summary": "A documented, runnable multi-rail payment adapter for agent wallets: one PaymentRail interface with a working example settling the same x402 payment on two rails - EVM/Base USDC (the status-quo distribution rail) and Nano (XNO, feeless/sub-second/self-custody). Reuses the existing Nano x402 client (feeless402 + x402nano-exact) instead of rebuilding payment logic.",
+  "builds": ["python-sdk", "example"],
+  "target": {
+    "ecosystem": "Agent-wallet SDKs outside the Nano ecosystem (heath territory: Coinbase AgentKit, Crossmint, Skyfire, Payman, Nevermined and other agent-wallet SDKs)",
+    "audience": "developers building AI agents that pay x402-priced HTTP endpoints, and the maintainers of agent-wallet SDKs deciding which settlement rails to support",
+    "why_missing": "Every agent-wallet SDK that supports x402 today settles on EVM/Base USDC (or Solana) only - AgentKit, Crossmint, Skyfire, Payman, Nevermined all stop at stablecoin rails. None documented a Nano (XNO) rail: feeless per transfer, sub-second finality, self-custodial (no freezeable stablecoin, no per-tx gas). There is no runnable, documented multi-rail adapter that shows an agent settling the SAME payment on USDC-on-EVM and XNO behind one interface. This example proves the shape so a first contact to any of those SDKs can cite a working, tested artifact instead of a claim."
+  },
+  "reuses": [
+    "x402nano-exact",
+    "feeless402",
+    "rpc-nano-to"
+  ],
+  "novelty": "No runnable multi-rail agent-payment adapter exists anywhere for wallet SDKs (verified: AgentKit, Crossmint, Skyfire, Nevermined, Payman each ship single-rail USDC; no repo shows USDC-on-EVM AND XNO behind one interface). This is a thin documented interface with two concrete rails - it rebuilds no payment logic on either rail, wrapping the MIT fee-free x402 Nano client for the XNO side and a minimal USDC stub for the EVM side to prove dispatch - and ships a tested runnable example that an agent-wallet maintainer can check and extend to their SDK."
+}

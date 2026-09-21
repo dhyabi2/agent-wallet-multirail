@@ -1,0 +1,93 @@
+{
+ "goal": "Deliver a runnable, documented multi-rail agent-payment adapter (one PaymentRail interface; EVM/USDC and Nano/XNO rails) that a wallet-SDK maintainer can check and cite as a working example.",
+ "repo": "/root/work/agent-wallet-multirail",
+ "created": "2026-09-21T05:53:15+00:00",
+ "base_commit": null,
+ "ledger_id": "2d4ccb2964efc7df",
+ "laws": [
+  {
+   "id": "L0",
+   "block": 1.0,
+   "statement": "NanoRail and UsdcRail both implement the same PaymentRail interface.",
+   "test": "Both concrete rails subclass PaymentRail and expose pay, quote, name.",
+   "scope": [
+    "src/**"
+   ],
+   "oracle": "python3 -c \"import sys; sys.path.insert(0,'src'); from agent_wallet_multirail.rails import PaymentRail, NanoRail, UsdcRail; assert issubclass(NanoRail, PaymentRail) and issubclass(UsdcRail, PaymentRail); r=NanoRail(); assert callable(r.pay) and callable(r.quote) and isinstance(r.name,str); print('RAILS-OK')\"",
+   "expect": "RAILS-OK",
+   "source": null,
+   "grounding": "oracle",
+   "version": 1,
+   "minted": "2026-09-21T05:53:50+00:00"
+  },
+  {
+   "id": "L1",
+   "block": 1.0,
+   "statement": "NanoRail is feeless and sub-second while UsdcRail charges a fee",
+   "test": "quote() returns fee 0 and fast finality for Nano, positive fee for USDC",
+   "scope": [
+    "src/**"
+   ],
+   "oracle": "python3 -c \"import sys; sys.path.insert(0,'src'); from agent_wallet_multirail.rails import NanoRail, UsdcRail; n=NanoRail().quote(1.0); u=UsdcRail().quote(1.0); assert n.fee_usd==0 and n.finality_s<1; assert u.fee_usd>0; print('FEES-OK')\"",
+   "expect": "FEES-OK",
+   "source": null,
+   "grounding": "oracle",
+   "version": 2,
+   "minted": "2026-09-21T05:54:47+00:00"
+  }
+ ],
+ "blocks": {
+  "1": {
+   "status": "pending",
+   "attempts": []
+  }
+ },
+ "deltas": [],
+ "waivers": [],
+ "contested": [],
+ "probe": null,
+ "events": [
+  {
+   "kind": "init",
+   "payload": {
+    "goal": "Deliver a runnable, documented multi-rail agent-payment adapter (one PaymentRail interface; EVM/USDC and Nano/XNO rails) that a wallet-SDK maintainer can check and cite as a working example.",
+    "spec": null
+   },
+   "at": "2026-09-21T05:53:15+00:00",
+   "prev": "genesis",
+   "receipt": "2ee0009c1257880466821d2cfd2cf7b8aa69ed215ffee0ff0264bdbf3a47a465"
+  },
+  {
+   "kind": "mint",
+   "payload": {
+    "id": "L0",
+    "block": "1",
+    "statement_sha": "2361963cae25918f55ba744b8a2afdb1ebb2a49b2b1d9e0ec26fd5dd26568421"
+   },
+   "at": "2026-09-21T05:53:50+00:00",
+   "prev": "2ee0009c1257880466821d2cfd2cf7b8aa69ed215ffee0ff0264bdbf3a47a465",
+   "receipt": "67a392943778390c84237045930a55b1f2424f78a976b8a7db65882b2926d89a"
+  },
+  {
+   "kind": "mint",
+   "payload": {
+    "id": "L1",
+    "block": "1",
+    "statement_sha": "3576b04373bb70e81c766cbc7beaabd01f1083d31dd52226efb1977b7fe8ba4a"
+   },
+   "at": "2026-09-21T05:54:47+00:00",
+   "prev": "67a392943778390c84237045930a55b1f2424f78a976b8a7db65882b2926d89a",
+   "receipt": "26ab17ea929347ab14f73cd2d9652499633df90601763726f1711b2e95809cf9"
+  },
+  {
+   "kind": "amend",
+   "payload": {
+    "id": "L1",
+    "version": 2
+   },
+   "at": "2026-09-21T05:56:13+00:00",
+   "prev": "26ab17ea929347ab14f73cd2d9652499633df90601763726f1711b2e95809cf9",
+   "receipt": "db09b8ee9874b3d2da4374b11f169bf3024b07dc5acd9eb8e4732b711073332d"
+  }
+ ]
+}
