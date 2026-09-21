@@ -353,6 +353,65 @@
      "coverage_gaps": [],
      "injection": [],
      "at": "2026-09-21T06:18:42+00:00"
+    },
+    {
+     "kind": "verify",
+     "ok": false,
+     "refusable": true,
+     "results": [
+      {
+       "id": "L0",
+       "pass": true,
+       "oracle_exit": 0,
+       "oracle_ok": true,
+       "mutants": {
+        "total": 0,
+        "killed": 0
+       },
+       "cached": true,
+       "judge": "deepseek/deepseek-v4-flash-0731",
+       "control": "passed"
+      },
+      {
+       "id": "L1",
+       "pass": true,
+       "oracle_exit": 0,
+       "oracle_ok": true,
+       "mutants": {
+        "total": 0,
+        "killed": 0
+       },
+       "cached": true,
+       "judge": "deepseek/deepseek-v4-flash-0731",
+       "control": "passed"
+      },
+      {
+       "id": "L2",
+       "pass": false,
+       "oracle_exit": 1,
+       "oracle_ok": false,
+       "judge": "deepseek/deepseek-v4-flash-0731",
+       "control": "passed"
+      },
+      {
+       "id": "L3",
+       "pass": true,
+       "oracle_exit": 0,
+       "oracle_ok": true,
+       "mutants": {
+        "total": 0,
+        "killed": 0
+       },
+       "cached": true,
+       "judge": "deepseek/deepseek-v4-flash-0731",
+       "control": "passed"
+      }
+     ],
+     "pre_sig": "3e485c1611dbfc5bf9a595d8ae56f95fe6aff919c846a8bfa2a6bdb631f31359",
+     "tier": "cheap",
+     "coverage_gaps": [],
+     "injection": [],
+     "at": "2026-09-21T06:21:12+00:00"
     }
    ]
   }
@@ -495,6 +554,16 @@
    "at": "2026-09-21T06:18:42+00:00",
    "prev": "b4bf88d334628f921270404c87493e8993e6395e6f7633a1ca58f9206c83e81c",
    "receipt": "4c36d024e8b6c742f3ea7f2146fcea694abc33e390fa42c8215767b645e676ff"
+  },
+  {
+   "kind": "verify",
+   "payload": {
+    "block": "2",
+    "ok": false
+   },
+   "at": "2026-09-21T06:21:12+00:00",
+   "prev": "4c36d024e8b6c742f3ea7f2146fcea694abc33e390fa42c8215767b645e676ff",
+   "receipt": "71509c78f46cde78e81474d94bc00c2de57b33b0cb04ffe907b96f0f58998fb5"
   }
  ]
 }

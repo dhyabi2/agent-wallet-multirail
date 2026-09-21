@@ -76,3 +76,20 @@ def test_nano_rpc_seam_is_honest(monkeypatch):
 def test_rail_for_returns_registered_rails():
     assert rail_for("nano-xno").name == "nano-xno"
     assert rail_for("usdc-evm").name == "usdc-evm"
+
+
+def test_example_emits_stable_marker():
+    """The <--all-rails> mode prints a stable SETTLED_ON marker per rail."""
+    import subprocess as sp
+    import sys as _sys
+
+    out = sp.run(
+        [_sys.executable, "examples/pay_on_any_rail.py", "--all-rails"],
+        capture_output=True,
+        text=True,
+        cwd=".",
+    )
+    assert out.returncode == 0
+    assert "SETTLED_ON:nano-xno FEE_USD:0.000000" in out.stdout
+    assert "SETTLED_ON:usdc-evm" in out.stdout
+    assert out.stdout.strip().endswith("OK")
