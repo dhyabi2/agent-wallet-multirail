@@ -5,3 +5,6 @@ __pycache__/
 .pytest_cache/
 .build/
 dist/
+.ledger/cache.json
+.ledger/tmp/
+.gitignore.bak
