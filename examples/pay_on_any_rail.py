@@ -45,6 +45,9 @@ def main() -> None:
 
     print("\n-- settling on the chosen rail --")
     result = settle(pick, amount_usd)
+    # invariant: the helper settles on exactly the rail the agent chose.
+    if result.rail != pick:
+        raise SystemExit(f"rail mismatch: chose {pick}, settled {result.rail}")
     print(f"  rail      : {result.rail}")
     print(f"  settled   : {result.settled}")
     print(f"  total fee : ${result.fee_usd:.6f}")
