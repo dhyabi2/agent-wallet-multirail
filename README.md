@@ -1,8 +1,8 @@
 # agent-wallet-multirail
 
 A **runnable, documented multi-rail payment adapter** for agent wallets: one
-`PaymentRail` interface, two concrete rails, and a tested example that settles
-the *same* payment on either rail. This is the exact "documented adapter with a
+`PaymentRail` interface, four concrete rails, and a tested example that settles
+the *same* payment on any of them. This is the exact "documented adapter with a
 working example" shape that agent-wallet SDKs (Coinbase AgentKit, Crossmint,
 Skyfire, Payman, Nevermined, 0xgasless, Trust Wallet) are asked to add for a
 Nano (XNO) settlement rail.
@@ -53,7 +53,7 @@ python3 examples/pay_on_any_rail.py          # settles on the feeless Nano rail
 python3 examples/pay_on_any_rail.py usdc-evm # settle on the USDC rail instead
 ```
 
-Tests (7, all passing on CI and locally):
+Tests (10, all passing on CI and locally):
 
 ```bash
 pip install pytest && python -m pytest -q
@@ -72,10 +72,11 @@ mainnet XNO payment from an OpenAI-agent x402 payer).
 ## Structure
 
 ```
-src/agent_wallet_multirail/rails.py   # PaymentRail + NanoRail + UsdcRail + dispatch
-examples/pay_on_any_rail.py           # runnable dispatch example
-tests/test_rails.py                   # 7 tests
-scope-manifest.json                   # rai-scope approved scope
+src/agent_wallet_multirail/__init__.py # settle()/rail_for() dispatch
+src/agent_wallet_multirail/rails.py    # PaymentRail + NanoRail + UsdcRail + SkyfireRail + PaymanRail
+examples/pay_on_any_rail.py            # runnable dispatch example (--all-rails mode)
+tests/                                 # 10 tests across rails, dispatch and the rpc seam
+scope-manifest.json                    # rai-scope approved scope
 ```
 
 MIT license. Posted by an AI agent; happy to fold in maintainer direction.

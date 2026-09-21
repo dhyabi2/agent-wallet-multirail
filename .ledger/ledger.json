@@ -472,7 +472,52 @@
   },
   "2.1": {
    "status": "pending",
-   "attempts": [],
+   "attempts": [
+    {
+     "kind": "verify",
+     "ok": false,
+     "refusable": true,
+     "results": [
+      {
+       "id": "L0",
+       "pass": true,
+       "oracle_exit": 0,
+       "oracle_ok": true,
+       "mutants": {
+        "total": 0,
+        "killed": 0
+       },
+       "judge": "deepseek/deepseek-v4-flash-0731",
+       "control": "passed"
+      },
+      {
+       "id": "L1",
+       "pass": true,
+       "oracle_exit": 0,
+       "oracle_ok": true,
+       "mutants": {
+        "total": 0,
+        "killed": 0
+       },
+       "judge": "deepseek/deepseek-v4-flash-0731",
+       "control": "passed"
+      },
+      {
+       "id": "L2",
+       "pass": false,
+       "oracle_exit": 1,
+       "oracle_ok": false,
+       "judge": "deepseek/deepseek-v4-flash-0731",
+       "control": "passed"
+      }
+     ],
+     "pre_sig": "66afddbfac882d41ab7dd0914d844ab6380a9cf32692a9e9b469988e91059dd7",
+     "tier": "cheap",
+     "coverage_gaps": [],
+     "injection": [],
+     "at": "2026-09-21T17:02:41+00:00"
+    }
+   ],
    "parent": "2"
   },
   "2.2": {
@@ -536,6 +581,65 @@
      "coverage_gaps": [],
      "injection": [],
      "at": "2026-09-21T06:28:06+00:00"
+    },
+    {
+     "kind": "verify",
+     "ok": false,
+     "refusable": true,
+     "results": [
+      {
+       "id": "L0",
+       "pass": true,
+       "oracle_exit": 0,
+       "oracle_ok": true,
+       "mutants": {
+        "total": 0,
+        "killed": 0
+       },
+       "cached": true,
+       "judge": "deepseek/deepseek-v4-flash-0731",
+       "control": "passed"
+      },
+      {
+       "id": "L1",
+       "pass": true,
+       "oracle_exit": 0,
+       "oracle_ok": true,
+       "mutants": {
+        "total": 0,
+        "killed": 0
+       },
+       "cached": true,
+       "judge": "deepseek/deepseek-v4-flash-0731",
+       "control": "passed"
+      },
+      {
+       "id": "L2",
+       "pass": false,
+       "oracle_exit": 1,
+       "oracle_ok": false,
+       "cached": true,
+       "judge": "deepseek/deepseek-v4-flash-0731",
+       "control": "passed"
+      },
+      {
+       "id": "L3",
+       "pass": true,
+       "oracle_exit": 0,
+       "oracle_ok": true,
+       "mutants": {
+        "total": 0,
+        "killed": 0
+       },
+       "judge": "deepseek/deepseek-v4-flash-0731",
+       "control": "passed"
+      }
+     ],
+     "pre_sig": "8a89e6688a2ea0a317df3de8cb8dd31dd1dfab38cfeb6ba57c8f2a20a5a63803",
+     "tier": "cheap",
+     "coverage_gaps": [],
+     "injection": [],
+     "at": "2026-09-21T17:03:05+00:00"
     }
    ],
    "parent": "2"
@@ -732,6 +836,26 @@
    "at": "2026-09-21T06:28:06+00:00",
    "prev": "06b7c57255fb858c94a37ae34ca184eba094c210891b1baa00e2907e38c9a3e8",
    "receipt": "a3876a43f4e0f87b94612699e4cb2b6c3ab2d6b29464c2ac21a35675ce1bea10"
+  },
+  {
+   "kind": "verify",
+   "payload": {
+    "block": "2.1",
+    "ok": false
+   },
+   "at": "2026-09-21T17:02:41+00:00",
+   "prev": "a3876a43f4e0f87b94612699e4cb2b6c3ab2d6b29464c2ac21a35675ce1bea10",
+   "receipt": "f6c69a66b24fe37f3686b02504270b39c5cc612e4376f24351deedb8a17127f0"
+  },
+  {
+   "kind": "verify",
+   "payload": {
+    "block": "2.2",
+    "ok": false
+   },
+   "at": "2026-09-21T17:03:05+00:00",
+   "prev": "f6c69a66b24fe37f3686b02504270b39c5cc612e4376f24351deedb8a17127f0",
+   "receipt": "ab3079a5260f25cd82ea1dfbd66981d150e0d8fa0218c238b68877a32bb5bce5"
   }
  ]
 }
