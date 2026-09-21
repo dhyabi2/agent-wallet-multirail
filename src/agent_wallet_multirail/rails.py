@@ -144,9 +144,48 @@ class UsdcRail(PaymentRail):
         )
 
 
+class SkyfireRail(PaymentRail):
+    """Skyfire (agentic payments): a closed US-dollar rail for AI micropayments.
+
+    Skyfire settles micro-payments for AI agents in US-dollars (its own
+    ledger/SDK) with a per-transfer fee. It is the kind of closed rail a wallet
+    SDK might already offer; adding a Nano rail behind the same interface is
+    additive, not a replacement.
+    """
+
+    name = "skyfire-usd"
+
+    def __init__(self, fee_pct: float = 0.015):
+        self._fee_pct = fee_pct
+        self._finality_s = 2.0
+        super().__init__()
+
+    def quote(self, amount_usd: float) -> Quote:
+        # Skyfire charges a fee on the settled amount.
+        fee = round(amount_usd * self._fee_pct, 6)
+        return Quote(
+            rail=self.name,
+            amount_usd=amount_usd,
+            fee_usd=fee,
+            finality_s=self._finality_s,
+            currency="USD",
+        )
+
+    def pay(self, quote: Quote) -> Settlement:
+        return Settlement(
+            rail=self.name,
+            amount_usd=quote.amount_usd,
+            fee_usd=quote.fee_usd,
+            settled=True,
+            tx_ref=f"skyfire-{int(time.time())}",
+            meta={"finality_s": self._finality_s},
+        )
+
+
 _REGISTRY: Dict[str, PaymentRail] = {
     NanoRail.name: NanoRail(),
     UsdcRail.name: UsdcRail(),
+    SkyfireRail.name: SkyfireRail(),
 }
 
 

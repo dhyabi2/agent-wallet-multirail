@@ -10,7 +10,7 @@ Run (no wallet, no keys; payments are simulated against a local stub):
     python3 examples/pay_on_any_rail.py
 
 By default it settles on the Nano rail (feeless) and prints a comparison.
-Pass a rail name to settle there instead:
+Pass a rail name to settle there instead (usdc-evm, skyfire-usd):
 
     python3 examples/pay_on_any_rail.py usdc-evm
 """
@@ -23,7 +23,7 @@ from agent_wallet_multirail import settle, rail_for
 
 def main() -> None:
     # Two rails an agent-wallet SDK could expose behind one interface.
-    rails = ["nano-xno", "usdc-evm"]
+    rails = ["nano-xno", "usdc-evm", "skyfire-usd"]
 
     # Which rail to settle on this run (default: the feeless one).
     pick = sys.argv[1] if len(sys.argv) > 1 else "nano-xno"
@@ -65,7 +65,7 @@ def main() -> None:
 
 def _all_rails() -> None:
     """Settle the same amount on every rail and report each result."""
-    rails = ["nano-xno", "usdc-evm"]
+    rails = ["nano-xno", "usdc-evm", "skyfire-usd"]
     amount_usd = 1.00
     print("-- settling $1.00 on every rail --")
     for name in rails:

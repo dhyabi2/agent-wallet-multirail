@@ -16,7 +16,7 @@ local stub so the repository is runnable with no wallet and no keys; the seams
 to point ``NanoRail`` at a real Nano RPC / Nano x402 client are documented in
 ``README.md``.
 """
-from .rails import PaymentRail, NanoRail, UsdcRail, rail_for, settle
+from .rails import PaymentRail, NanoRail, UsdcRail, SkyfireRail, rail_for, settle
 
-__all__ = ["PaymentRail", "NanoRail", "UsdcRail", "rail_for", "settle"]
+__all__ = ["PaymentRail", "NanoRail", "UsdcRail", "SkyfireRail", "rail_for", "settle"]
 __version__ = "0.1.0"

@@ -9,6 +9,7 @@ from agent_wallet_multirail.rails import (
     NanoRail,
     PaymentRail,
     Quote,
+    SkyfireRail,
     UsdcRail,
     rail_for,
     settle,
@@ -56,6 +57,15 @@ def test_settle_refuses_unknown_rail():
 
     with pytest.raises(KeyError):
         settle("no-such-rail", 1.0)
+
+
+def test_third_rail_skyfire_is_fee_charging():
+    q = SkyfireRail().quote(1.0)
+    assert q.fee_usd > 0
+    assert q.currency == "USD"
+    r = settle("skyfire-usd", 1.0)
+    assert r.rail == "skyfire-usd"
+    assert r.tx_ref.startswith("skyfire-")
 
 
 def test_nano_rpc_seam_is_honest(monkeypatch):

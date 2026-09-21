@@ -25,9 +25,10 @@ SDK, and see that adding Nano is additive, not a fork.
 ```python
 from agent_wallet_multirail import settle
 
-# Same $ amount, two rails, one interface:
-nano = settle("nano-xno",  1.00)   # feeless, sub-second
-usdc = settle("usdc-evm",  1.00)   # processing fee + EVM gas
+# Same $ amount, three rails, one interface:
+nano   = settle("nano-xno",    1.00)   # feeless, sub-second
+usdc   = settle("usdc-evm",    1.00)   # processing fee + EVM gas
+skyfire = settle("skyfire-usd", 1.00)  # Skyfire's closed US-dollar ledger + fee
 ```
 
 The interface (`PaymentRail`) is one abstract base class with `quote()` and
