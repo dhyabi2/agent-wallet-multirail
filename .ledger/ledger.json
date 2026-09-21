@@ -64,6 +64,21 @@
    "grounding": "oracle",
    "version": 2,
    "minted": "2026-09-21T06:01:36+00:00"
+  },
+  {
+   "id": "L4",
+   "block": 3.0,
+   "statement": "The example settles a payment on every named rail via the shared helper",
+   "test": "Running the example with --all-rails prints one SETTLED_ON marker per rail",
+   "scope": [
+    "examples/"
+   ],
+   "oracle": "cd /root/work/agent-wallet-multirail && . .venv/bin/activate && { python3 examples/pay_on_any_rail.py --all-rails 2>&1 || true; python3 examples/pay_on_any_rail.py usdc-evm 2>&1 || true; } | grep -cE 'SETTLED_ON:(nano-xno|usdc-evm|skyfire-usd|payman-api)' | grep -q '^5$' && echo EX-OK",
+   "expect": "EX-OK",
+   "source": null,
+   "grounding": "oracle",
+   "version": 1,
+   "minted": "2026-09-21T18:20:23+00:00"
   }
  ],
  "blocks": {
@@ -643,6 +658,10 @@
     }
    ],
    "parent": "2"
+  },
+  "3": {
+   "status": "pending",
+   "attempts": []
   }
  },
  "deltas": [],
@@ -856,6 +875,17 @@
    "at": "2026-09-21T17:03:05+00:00",
    "prev": "f6c69a66b24fe37f3686b02504270b39c5cc612e4376f24351deedb8a17127f0",
    "receipt": "ab3079a5260f25cd82ea1dfbd66981d150e0d8fa0218c238b68877a32bb5bce5"
+  },
+  {
+   "kind": "mint",
+   "payload": {
+    "id": "L4",
+    "block": "3",
+    "statement_sha": "bb392a13400a7db088ec3f9085e4feab7f72938e796876c61b5d93f8239049b7"
+   },
+   "at": "2026-09-21T18:20:23+00:00",
+   "prev": "ab3079a5260f25cd82ea1dfbd66981d150e0d8fa0218c238b68877a32bb5bce5",
+   "receipt": "271343cd12768c184d7c747057d74652891c24d0afb83054595ca8a093912284"
   }
  ]
 }
