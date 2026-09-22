@@ -73,11 +73,11 @@
    "scope": [
     "examples/"
    ],
-   "oracle": "cd /root/work/agent-wallet-multirail && . .venv/bin/activate && { python3 examples/pay_on_any_rail.py --all-rails 2>&1 || true; python3 examples/pay_on_any_rail.py usdc-evm 2>&1 || true; } | grep -cE 'SETTLED_ON:(nano-xno|usdc-evm|skyfire-usd|payman-api)' | grep -q '^5$' && echo EX-OK",
+   "oracle": "cd /root/work/agent-wallet-multirail && . .venv/bin/activate && out=$(python3 examples/pay_on_any_rail.py --all-rails 2>&1) && [ \"$(echo \"$out\" | grep -cE 'SETTLED_ON:(nano-xno|usdc-evm|skyfire-usd|payman-api)')\" = 4 ] && echo \"$out\" | grep -q '^OK$' && echo EX-OK",
    "expect": "EX-OK",
    "source": null,
    "grounding": "oracle",
-   "version": 1,
+   "version": 2,
    "minted": "2026-09-21T18:20:23+00:00"
   }
  ],
@@ -120,6 +120,44 @@
      "coverage_gaps": [],
      "injection": [],
      "at": "2026-09-21T06:00:31+00:00"
+    },
+    {
+     "kind": "verify",
+     "ok": true,
+     "refusable": true,
+     "results": [
+      {
+       "id": "L0",
+       "pass": true,
+       "oracle_exit": 0,
+       "oracle_ok": true,
+       "mutants": {
+        "total": 0,
+        "killed": 0
+       },
+       "cached": true,
+       "judge": "deepseek/deepseek-v4-flash-0731",
+       "control": "passed"
+      },
+      {
+       "id": "L1",
+       "pass": true,
+       "oracle_exit": 0,
+       "oracle_ok": true,
+       "mutants": {
+        "total": 0,
+        "killed": 0
+       },
+       "cached": true,
+       "judge": "deepseek/deepseek-v4-flash-0731",
+       "control": "passed"
+      }
+     ],
+     "pre_sig": "a7825191b19a7a139760476384f9a0c4e249828e95599b13b53c54f16738c7ba",
+     "tier": "cheap",
+     "coverage_gaps": [],
+     "injection": [],
+     "at": "2026-09-22T07:25:39+00:00"
     }
    ]
   },
@@ -964,6 +1002,78 @@
      "coverage_gaps": [],
      "injection": [],
      "at": "2026-09-21T20:44:40+00:00"
+    },
+    {
+     "kind": "verify",
+     "ok": false,
+     "refusable": true,
+     "results": [
+      {
+       "id": "L0",
+       "pass": true,
+       "oracle_exit": 0,
+       "oracle_ok": true,
+       "mutants": {
+        "total": 0,
+        "killed": 0
+       },
+       "cached": true,
+       "judge": "deepseek/deepseek-v4-flash-0731",
+       "control": "passed"
+      },
+      {
+       "id": "L1",
+       "pass": true,
+       "oracle_exit": 0,
+       "oracle_ok": true,
+       "mutants": {
+        "total": 0,
+        "killed": 0
+       },
+       "cached": true,
+       "judge": "deepseek/deepseek-v4-flash-0731",
+       "control": "passed"
+      },
+      {
+       "id": "L2",
+       "pass": false,
+       "oracle_exit": 1,
+       "oracle_ok": false,
+       "cached": true,
+       "judge": "deepseek/deepseek-v4-flash-0731",
+       "control": "passed"
+      },
+      {
+       "id": "L3",
+       "pass": true,
+       "oracle_exit": 0,
+       "oracle_ok": true,
+       "mutants": {
+        "total": 0,
+        "killed": 0
+       },
+       "cached": true,
+       "judge": "deepseek/deepseek-v4-flash-0731",
+       "control": "passed"
+      },
+      {
+       "id": "L4",
+       "pass": true,
+       "oracle_exit": 0,
+       "oracle_ok": true,
+       "mutants": {
+        "total": 0,
+        "killed": 0
+       },
+       "judge": "deepseek/deepseek-v4-flash-0731",
+       "control": "passed"
+      }
+     ],
+     "pre_sig": "d55c7df67b28e5124e22f2dd181b443ec202dc4666df0f88f4243c5d42dbf3df",
+     "tier": "cheap",
+     "coverage_gaps": [],
+     "injection": [],
+     "at": "2026-09-22T07:25:09+00:00"
     }
    ]
   }
@@ -1266,6 +1376,36 @@
    "at": "2026-09-22T06:50:22+00:00",
    "prev": "289dc9a6d7f9f8d5efc4493a4d8a633e526197a16bb8dae9464f7a865618c3fd",
    "receipt": "0b077ce463c9c5653537dee324b57b993f751d1ce51ac0f538f63c76fd2a685b"
+  },
+  {
+   "kind": "amend",
+   "payload": {
+    "id": "L4",
+    "version": 2
+   },
+   "at": "2026-09-22T07:23:39+00:00",
+   "prev": "0b077ce463c9c5653537dee324b57b993f751d1ce51ac0f538f63c76fd2a685b",
+   "receipt": "19c0f222cbd16d02bcf6863dc5f361f8a614b7d3e975c330c18024886e7b8715"
+  },
+  {
+   "kind": "verify",
+   "payload": {
+    "block": "3",
+    "ok": false
+   },
+   "at": "2026-09-22T07:25:09+00:00",
+   "prev": "19c0f222cbd16d02bcf6863dc5f361f8a614b7d3e975c330c18024886e7b8715",
+   "receipt": "818c8d7a0f2c3bf123f29f48ddc7d2cfa9291d849305b603a0458973e95e6393"
+  },
+  {
+   "kind": "verify",
+   "payload": {
+    "block": "1",
+    "ok": true
+   },
+   "at": "2026-09-22T07:25:39+00:00",
+   "prev": "818c8d7a0f2c3bf123f29f48ddc7d2cfa9291d849305b603a0458973e95e6393",
+   "receipt": "b08f4d85fe97f80834b0bfcba1ab0d5f4561d0f916307f2545a8b3557be5dcd1"
   }
  ]
 }
