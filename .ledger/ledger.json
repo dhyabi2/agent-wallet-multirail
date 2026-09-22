@@ -79,6 +79,45 @@
    "grounding": "oracle",
    "version": 2,
    "minted": "2026-09-21T18:20:23+00:00"
+  },
+  {
+   "id": "L5",
+   "block": 4.0,
+   "statement": "NanoWalletProvider extends AgentKit WalletProvider and implements every abstract method",
+   "test": "All six abstract WalletProvider methods are overridden and an instance instantiates",
+   "scope": [],
+   "oracle": "bash /root/work/agent-wallet-multirail/.ledger/tmp/oracle_agentkit_interface.sh",
+   "expect": "interface-ok",
+   "source": null,
+   "grounding": "oracle",
+   "version": 2,
+   "minted": "2026-09-22T08:37:28+00:00"
+  },
+  {
+   "id": "L6",
+   "block": 4.0,
+   "statement": "Nano Wallet Provider test suite passes locally (12 tests)",
+   "test": "Running pytest on the Nano provider tests reports 12 passed",
+   "scope": [],
+   "oracle": "bash /root/work/agent-wallet-multirail/.ledger/tmp/oracle_agentkit_tests.sh",
+   "expect": "passed",
+   "source": null,
+   "grounding": "oracle",
+   "version": 1,
+   "minted": "2026-09-22T08:43:22+00:00"
+  },
+  {
+   "id": "L7",
+   "block": 4.1,
+   "statement": "NanoWalletProvider.native_transfer submits a Nano process send block and returns the block hash",
+   "test": "native_transfer calls the RPC process action and returns the hash",
+   "scope": [],
+   "oracle": "bash /root/work/agent-wallet-multirail/.ledger/tmp/oracle_agentkit_transfer.sh",
+   "expect": "transfer-ok",
+   "source": null,
+   "grounding": "oracle",
+   "version": 1,
+   "minted": "2026-09-22T08:43:28+00:00"
   }
  ],
  "blocks": {
@@ -1076,6 +1115,14 @@
      "at": "2026-09-22T07:25:09+00:00"
     }
    ]
+  },
+  "4": {
+   "status": "pending",
+   "attempts": []
+  },
+  "4.1": {
+   "status": "pending",
+   "attempts": []
   }
  },
  "deltas": [],
@@ -1406,6 +1453,49 @@
    "at": "2026-09-22T07:25:39+00:00",
    "prev": "818c8d7a0f2c3bf123f29f48ddc7d2cfa9291d849305b603a0458973e95e6393",
    "receipt": "b08f4d85fe97f80834b0bfcba1ab0d5f4561d0f916307f2545a8b3557be5dcd1"
+  },
+  {
+   "kind": "mint",
+   "payload": {
+    "id": "L5",
+    "block": "4",
+    "statement_sha": "da46ea6f61bd940e386cc1497285976a090c760117135f5df33b9d1a6270387d"
+   },
+   "at": "2026-09-22T08:37:28+00:00",
+   "prev": "b08f4d85fe97f80834b0bfcba1ab0d5f4561d0f916307f2545a8b3557be5dcd1",
+   "receipt": "2b15c1b63da65414284ff584284eb6ca7f20e9dddee53aeec22cada31193c61a"
+  },
+  {
+   "kind": "amend",
+   "payload": {
+    "id": "L5",
+    "version": 2
+   },
+   "at": "2026-09-22T08:42:31+00:00",
+   "prev": "2b15c1b63da65414284ff584284eb6ca7f20e9dddee53aeec22cada31193c61a",
+   "receipt": "154101b30ab2622e7685e778789e2c2f8f9f01b94e5d19601e1acde61b4a0d56"
+  },
+  {
+   "kind": "mint",
+   "payload": {
+    "id": "L6",
+    "block": "4",
+    "statement_sha": "2388c25d3360821948891b88eaeea67fb059231019631d9702e67763bcb5def6"
+   },
+   "at": "2026-09-22T08:43:22+00:00",
+   "prev": "154101b30ab2622e7685e778789e2c2f8f9f01b94e5d19601e1acde61b4a0d56",
+   "receipt": "b432f1033153a6b98f89b8d4c0cf57bf583e7bdecfcd55a02a22c02f85dfda28"
+  },
+  {
+   "kind": "mint",
+   "payload": {
+    "id": "L7",
+    "block": "4.1",
+    "statement_sha": "311cf8d17f84676077b7531aa2a6ef9603b1ba9089dd40b880b6deff1ae89bce"
+   },
+   "at": "2026-09-22T08:43:28+00:00",
+   "prev": "b432f1033153a6b98f89b8d4c0cf57bf583e7bdecfcd55a02a22c02f85dfda28",
+   "receipt": "9cbb1e7ddfde5d85a056b7dd5f88f81a21f2a28e936c33e99fd4e5c2219bc1bb"
   }
  ]
 }
