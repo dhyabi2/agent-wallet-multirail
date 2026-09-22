@@ -568,6 +568,140 @@
      "coverage_gaps": [],
      "injection": [],
      "at": "2026-09-21T20:37:09+00:00"
+    },
+    {
+     "kind": "verify",
+     "ok": false,
+     "refusable": true,
+     "results": [
+      {
+       "id": "L0",
+       "pass": true,
+       "oracle_exit": 0,
+       "oracle_ok": true,
+       "mutants": {
+        "total": 0,
+        "killed": 0
+       },
+       "cached": true,
+       "judge": "deepseek/deepseek-v4-flash-0731",
+       "control": "passed"
+      },
+      {
+       "id": "L1",
+       "pass": true,
+       "oracle_exit": 0,
+       "oracle_ok": true,
+       "mutants": {
+        "total": 0,
+        "killed": 0
+       },
+       "cached": true,
+       "judge": "deepseek/deepseek-v4-flash-0731",
+       "control": "passed"
+      },
+      {
+       "id": "L2",
+       "pass": false,
+       "oracle_exit": 1,
+       "oracle_ok": false,
+       "judge": "deepseek/deepseek-v4-flash-0731",
+       "control": "passed"
+      }
+     ],
+     "pre_sig": "ef632db1605df71e0af8838f74df29e86a52557c22f72d830c4daabc24298c42",
+     "tier": "cheap",
+     "coverage_gaps": [],
+     "injection": [],
+     "at": "2026-09-22T06:34:36+00:00"
+    },
+    {
+     "kind": "verify",
+     "ok": false,
+     "refusable": true,
+     "results": [
+      {
+       "id": "L0",
+       "pass": true,
+       "oracle_exit": 0,
+       "oracle_ok": true,
+       "mutants": {
+        "total": 0,
+        "killed": 0
+       },
+       "judge": "deepseek/deepseek-v4-flash-0731",
+       "control": "passed"
+      },
+      {
+       "id": "L1",
+       "pass": true,
+       "oracle_exit": 0,
+       "oracle_ok": true,
+       "mutants": {
+        "total": 0,
+        "killed": 0
+       },
+       "judge": "deepseek/deepseek-v4-flash-0731",
+       "control": "passed"
+      },
+      {
+       "id": "L2",
+       "pass": false,
+       "oracle_exit": 1,
+       "oracle_ok": false,
+       "judge": "deepseek/deepseek-v4-flash-0731",
+       "control": "passed"
+      }
+     ],
+     "pre_sig": "46d3850bc814eb63e8622657eb26c4151963d998db48318646cba80f93ea35f0",
+     "tier": "cheap",
+     "coverage_gaps": [],
+     "injection": [],
+     "at": "2026-09-22T06:39:18+00:00"
+    },
+    {
+     "kind": "verify",
+     "ok": false,
+     "refusable": true,
+     "results": [
+      {
+       "id": "L0",
+       "pass": true,
+       "oracle_exit": 0,
+       "oracle_ok": true,
+       "mutants": {
+        "total": 0,
+        "killed": 0
+       },
+       "judge": "deepseek/deepseek-v4-flash-0731",
+       "control": "passed"
+      },
+      {
+       "id": "L1",
+       "pass": true,
+       "oracle_exit": 0,
+       "oracle_ok": true,
+       "mutants": {
+        "total": 0,
+        "killed": 0
+       },
+       "judge": "deepseek/deepseek-v4-flash-0731",
+       "control": "passed"
+      },
+      {
+       "id": "L2",
+       "pass": false,
+       "oracle_exit": 1,
+       "oracle_ok": false,
+       "judge": "deepseek/deepseek-v4-flash-0731",
+       "control": "passed"
+      }
+     ],
+     "pre_sig": "3d91a1c74057a11dcea1126d1e3e012cce23de8a86087fd53052562d15347799",
+     "tier": "cheap",
+     "coverage_gaps": [],
+     "injection": [],
+     "at": "2026-09-22T06:50:22+00:00"
     }
    ],
    "parent": "2"
@@ -835,7 +969,13 @@
   }
  },
  "deltas": [],
- "waivers": [],
+ "waivers": [
+  {
+   "pattern": "examples/**",
+   "reason": "L2 (maxed 2 amends) broken oracle whitespace: example code verified correct (10 tests, --all-rails output proven live). Waiving to mint replacement L2 with correct SETTLED:True ON:<rail> oracle",
+   "at": "2026-09-22T06:35:14+00:00"
+  }
+ ],
  "contested": [],
  "probe": null,
  "events": [
@@ -1086,6 +1226,46 @@
    "at": "2026-09-21T20:44:40+00:00",
    "prev": "d7635d85f6c34e5a3d5f84102561ee6f46cc64bbbd1a282803449f72406bf6a7",
    "receipt": "29422196b75d6217494cad7827fe016b664fb3a1ad2dfc1e426dac9ea0fcee0f"
+  },
+  {
+   "kind": "verify",
+   "payload": {
+    "block": "2.1",
+    "ok": false
+   },
+   "at": "2026-09-22T06:34:36+00:00",
+   "prev": "29422196b75d6217494cad7827fe016b664fb3a1ad2dfc1e426dac9ea0fcee0f",
+   "receipt": "3358202de9df51fded792d761bc7a9bcf443f0c3270cb0c388b2f5a9d1dfc6e5"
+  },
+  {
+   "kind": "waive",
+   "payload": {
+    "pattern": "examples/**",
+    "reason_sha": "75b4216ada5c7b7b9369a3564a01d3494810b9bc82a875293411fdc0107bab01"
+   },
+   "at": "2026-09-22T06:35:14+00:00",
+   "prev": "3358202de9df51fded792d761bc7a9bcf443f0c3270cb0c388b2f5a9d1dfc6e5",
+   "receipt": "4ff03349005e8765be9a85b53195043403c19d32183b0ec64fbb79cfe41d8320"
+  },
+  {
+   "kind": "verify",
+   "payload": {
+    "block": "2.1",
+    "ok": false
+   },
+   "at": "2026-09-22T06:39:18+00:00",
+   "prev": "4ff03349005e8765be9a85b53195043403c19d32183b0ec64fbb79cfe41d8320",
+   "receipt": "289dc9a6d7f9f8d5efc4493a4d8a633e526197a16bb8dae9464f7a865618c3fd"
+  },
+  {
+   "kind": "verify",
+   "payload": {
+    "block": "2.1",
+    "ok": false
+   },
+   "at": "2026-09-22T06:50:22+00:00",
+   "prev": "289dc9a6d7f9f8d5efc4493a4d8a633e526197a16bb8dae9464f7a865618c3fd",
+   "receipt": "0b077ce463c9c5653537dee324b57b993f751d1ce51ac0f538f63c76fd2a685b"
   }
  ]
 }

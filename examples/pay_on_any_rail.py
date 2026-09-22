@@ -55,8 +55,9 @@ def main() -> None:
     print(f"  total fee : ${result.fee_usd:.6f}")
     print(f"  tx ref    : {result.tx_ref}")
     print(f"  finality  : {result.meta['finality_s']}s")
-    # machine-readable marker (stable for automation / first-contact citations)
+    # machine-readable markers (stable for automation / first-contact citations)
     print(f"SETTLED_ON:{result.rail} FEE_USD:{result.fee_usd:.6f}")
+    print(f"SETTLED:{result.settled} ON:{result.rail}")
     if result.fee_usd == 0:
         print("\n  Nano rail settled feeless and sub-second (no gas, no freezeable stablecoin).")
     else:
