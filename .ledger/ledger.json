@@ -1811,6 +1811,11 @@
    "block": 5.0,
    "text": "deliverable.verified: not-re-verified-this-run → re-verified-green-2026-09-23 (10/10 pytest via .venv, probe 100/100, receipt chain intact, ungrounded laws none) = progress_artifact ready to draft as an upstream PR to an unowned agent-wallet SDK when the PANDeveloper001 classic PAT is restored (GitHub write rail down this run, network: #119)",
    "at": "2026-09-23T12:34:26+00:00"
+  },
+  {
+   "block": 5.0,
+   "text": "discovery.territory: {grip,kaditang,cobo,xona-labs} → +openfort-xyz/agent-skills, +solana-foundation/pay, +agentpay.so (all settle USDC, none have Nano)",
+   "at": "2026-09-23T16:33:10+00:00"
   }
  ],
  "waivers": [
@@ -2460,6 +2465,16 @@
    "at": "2026-09-23T12:34:26+00:00",
    "prev": "65687ebb6740d7fff00178db28f53b4d3bf0580807f6fb907b80a52f8b46affc",
    "receipt": "0db7cbaefc446e6c927c1363fd03062588508bcd425f3b162d4308cf86b156a7"
+  },
+  {
+   "kind": "delta",
+   "payload": {
+    "block": "5",
+    "sha": "f0f2e995c1b643ae632e4fab41ab874af6155dd7f7a468d80348a8b611f4eee8"
+   },
+   "at": "2026-09-23T16:33:10+00:00",
+   "prev": "0db7cbaefc446e6c927c1363fd03062588508bcd425f3b162d4308cf86b156a7",
+   "receipt": "41e279383c8a8e1d5f206e89e6a2aad7ec89cfadd5d0f479fb83c7281d18e46b"
   }
  ]
 }
