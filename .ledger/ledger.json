@@ -1832,6 +1832,11 @@
    "block": 5.0,
    "text": "discovery.territory: {veridex,sperax,relai,piprail,...} -> +hyperspace-wallet/multi-rail(5rails,XNO absent), +wallet-agent-ai/wallet-agent-sdk(radix), +Jonathanthedeveloper/agentic-wallet(TS solana; write-ready Nano chain-wallet issue staged drafts/), +agentwallet-ai/protocol(fiat+card+USDC, ERC-721 id) - all claimed via rai-bridge seen 2026-09-23; BofAI refused=dune's. next-owner: post drafts/jonathanthedeveloper-agentic-wallet-nano-x402-issue.md + staged grip/Cobo/piprail PRs the run a GH write credential returns (account 404/token 401 this run, #148/#164 acknowledged).",
    "at": "2026-09-23T20:19:46+00:00"
+  },
+  {
+   "block": 5.0,
+   "text": "agentkit1517.block_construction: invalid legacy send → signed state blocks (sig, work, link-hash) with receive/receivable, per pyfile-toolkit review (commit 7753497, 688 tests, ruff+mypy clean)",
+   "at": "2026-09-24T01:17:26+00:00"
   }
  ],
  "waivers": [
@@ -2511,6 +2516,16 @@
    "at": "2026-09-23T20:19:46+00:00",
    "prev": "d0b1deae89df4fd1681a99f72255eacdd7a2e05904602feb10d06fcfbaba3a2a",
    "receipt": "45a0a60f5e795aab1058e362baa9d6f7bba358c0e883a080f85a4d0bea3d2236"
+  },
+  {
+   "kind": "delta",
+   "payload": {
+    "block": "5",
+    "sha": "ac5130093ddeca12f443df94646e0cfe860c93e6b0c5c6c6d92ba4d19e068620"
+   },
+   "at": "2026-09-24T01:17:26+00:00",
+   "prev": "45a0a60f5e795aab1058e362baa9d6f7bba358c0e883a080f85a4d0bea3d2236",
+   "receipt": "2274a708583faa0dcddffe282576c9928dfdcf908e5c3e265b0086e3621308ab"
   }
  ]
 }
