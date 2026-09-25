@@ -141,6 +141,21 @@
    "grounding": "oracle",
    "version": 1,
    "minted": "2026-09-22T11:35:54+00:00"
+  },
+  {
+   "id": "L9",
+   "block": 5.0,
+   "statement": "The crossmint Nano adapter shows how a Nano (XNO) settle rail fits into a Crossmint agent checkout: feeless, sub-second, pure logic.",
+   "test": "run crossmint example, check SETTLED:TRUE ON:nano-xno marker",
+   "scope": [
+    "tests/test_crossmint_nano_adapter.py"
+   ],
+   "oracle": ".venv/bin/python3 examples/crossmint_nano_adapter.py",
+   "expect": ".*SETTLED:TRUE ON:nano-xno",
+   "source": null,
+   "grounding": "oracle",
+   "version": 1,
+   "minted": "2026-09-25T17:42:58+00:00"
   }
  ],
  "blocks": {
@@ -1794,6 +1809,95 @@
      "at": "2026-09-22T10:31:15+00:00"
     }
    ]
+  },
+  "5": {
+   "status": "pass",
+   "attempts": [
+    {
+     "kind": "verify",
+     "ok": true,
+     "refusable": true,
+     "results": [
+      {
+       "id": "L0",
+       "pass": true,
+       "oracle_exit": 0,
+       "oracle_ok": true,
+       "mutants": {
+        "total": 0,
+        "killed": 0
+       },
+       "judge": "deepseek/deepseek-v4-flash-0731",
+       "control": "passed"
+      },
+      {
+       "id": "L1",
+       "pass": true,
+       "oracle_exit": 0,
+       "oracle_ok": true,
+       "mutants": {
+        "total": 0,
+        "killed": 0
+       },
+       "judge": "deepseek/deepseek-v4-flash-0731",
+       "control": "passed"
+      },
+      {
+       "id": "L3",
+       "pass": true,
+       "oracle_exit": 0,
+       "oracle_ok": true,
+       "mutants": {
+        "total": 6,
+        "killed": 6
+       },
+       "judge": "deepseek/deepseek-v4-flash-0731",
+       "control": "passed"
+      },
+      {
+       "id": "L4",
+       "pass": true,
+       "oracle_exit": 0,
+       "oracle_ok": true,
+       "mutants": {
+        "total": 6,
+        "killed": 6
+       },
+       "judge": "deepseek/deepseek-v4-flash-0731",
+       "control": "passed"
+      },
+      {
+       "id": "L8",
+       "pass": true,
+       "oracle_exit": 0,
+       "oracle_ok": true,
+       "mutants": {
+        "total": 6,
+        "killed": 6
+       },
+       "judge": "deepseek/deepseek-v4-flash-0731",
+       "control": "passed"
+      },
+      {
+       "id": "L9",
+       "pass": true,
+       "oracle_exit": 0,
+       "oracle_ok": true,
+       "mutants": {
+        "total": 6,
+        "killed": 6
+       },
+       "judge": "deepseek/deepseek-v4-flash-0731",
+       "control": "passed"
+      }
+     ],
+     "pre_sig": "dfba11e422e490b572e5c71bc05465ecbe129ecc2e4e91e963cba76c621c7842",
+     "tier": "cheap",
+     "coverage_gaps": [],
+     "injection": [],
+     "at": "2026-09-25T17:44:32+00:00"
+    }
+   ]
   }
  },
  "deltas": [
@@ -1852,6 +1956,11 @@
    "block": 2.2,
    "text": "rails.registry: 4 rails → 5 rails (add NeverminedRail 'nevermined-proto'; Nano/USDC/Skyfire/Payman/Nevermined all ship, completing the scope-named agent-wallet venues; suite 21 green, README/init/examples updated)",
    "at": "2026-09-25T16:31:29+00:00"
+  },
+  {
+   "block": 5.0,
+   "text": "rails.coverage: 5 rails → 5 rails + crossmint adapter example (6 new tests, 27 green, SETTLED:TRUE ON:nano-xno proven) + verified L9 oracle",
+   "at": "2026-09-25T17:45:41+00:00"
   }
  ],
  "waivers": [
@@ -2561,6 +2670,37 @@
    "at": "2026-09-25T16:31:29+00:00",
    "prev": "7345f9bbcdb01789390382846e28794cc741455df522e372f74a489dbd385f67",
    "receipt": "230cb851728e15b8c30895325433d159b53713e3dc9d9be67eafb0505f1a67d9"
+  },
+  {
+   "kind": "mint",
+   "payload": {
+    "id": "L9",
+    "block": "5",
+    "statement_sha": "1586e6b70e6a42e0c6f875ec0eba4cb0950bc645f937d1f44d571a7d0e85f0e9"
+   },
+   "at": "2026-09-25T17:42:58+00:00",
+   "prev": "230cb851728e15b8c30895325433d159b53713e3dc9d9be67eafb0505f1a67d9",
+   "receipt": "e14afcce666e38b941a8410b22ec5ce223966602db250814834486c27d77589f"
+  },
+  {
+   "kind": "verify",
+   "payload": {
+    "block": "5",
+    "ok": true
+   },
+   "at": "2026-09-25T17:44:32+00:00",
+   "prev": "e14afcce666e38b941a8410b22ec5ce223966602db250814834486c27d77589f",
+   "receipt": "7316ff1060cf272b0da47ed7b44b17274eeddb98609c1226f7d3937ca92e5cbe"
+  },
+  {
+   "kind": "delta",
+   "payload": {
+    "block": "5",
+    "sha": "b94fdfea1e3bb8a80b6d2af790a1323e4e1d62eecfced676e46cd4fcca511f04"
+   },
+   "at": "2026-09-25T17:45:41+00:00",
+   "prev": "7316ff1060cf272b0da47ed7b44b17274eeddb98609c1226f7d3937ca92e5cbe",
+   "receipt": "204175ebb784dc2378295fd37b6dcd9ad0a86a57080a3759b703b6c11dceabca"
   }
  ]
 }
