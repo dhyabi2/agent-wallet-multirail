@@ -100,16 +100,26 @@ def test_rail_for_returns_registered_rails():
 
 def test_example_emits_stable_marker():
     """The <--all-rails> mode prints a stable SETTLED_ON marker per rail."""
+    import os
     import subprocess as sp
     import sys as _sys
+
+    # The subprocess inherits none of the sys.path this module set up for
+    # itself, so it needs src on PYTHONPATH - otherwise the test only passes on
+    # a machine where the package happens to be installed, and fails for anyone
+    # running the suite in a fresh clone the way the README says to.
+    env = dict(os.environ)
+    src = os.path.abspath("src")
+    env["PYTHONPATH"] = src + os.pathsep + env.get("PYTHONPATH", "")
 
     out = sp.run(
         [_sys.executable, "examples/pay_on_any_rail.py", "--all-rails"],
         capture_output=True,
         text=True,
         cwd=".",
+        env=env,
     )
-    assert out.returncode == 0
+    assert out.returncode == 0, out.stderr
     assert "SETTLED_ON:nano-xno FEE_USD:0.000000" in out.stdout
     assert "SETTLED_ON:usdc-evm" in out.stdout
     assert out.stdout.strip().endswith("OK")
