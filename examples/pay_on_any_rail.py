@@ -23,7 +23,7 @@ from agent_wallet_multirail import settle, rail_for
 
 def main() -> None:
     # The rails an agent-wallet SDK could expose behind one interface.
-    rails = ["nano-xno", "usdc-evm", "skyfire-usd", "payman-api"]
+    rails = ["nano-xno", "usdc-evm", "skyfire-usd", "payman-api", "nevermined-proto"]
 
     # Which rail to settle on this run (default: the feeless one).
     pick = sys.argv[1] if len(sys.argv) > 1 else "nano-xno"
@@ -66,7 +66,7 @@ def main() -> None:
 
 def _all_rails() -> None:
     """Settle the same amount on every rail and report each result."""
-    rails = ["nano-xno", "usdc-evm", "skyfire-usd", "payman-api"]
+    rails = ["nano-xno", "usdc-evm", "skyfire-usd", "payman-api", "nevermined-proto"]
     amount_usd = 1.00
     print("-- settling $1.00 on every rail --")
     for name in rails:

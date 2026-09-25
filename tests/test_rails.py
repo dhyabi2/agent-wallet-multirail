@@ -7,6 +7,7 @@ sys.path.insert(0, "examples")
 
 from agent_wallet_multirail.rails import (
     NanoRail,
+    NeverminedRail,
     PaymentRail,
     PaymanRail,
     Quote,
@@ -78,6 +79,15 @@ def test_fourth_rail_payman_is_fee_charging():
     assert r.tx_ref.startswith("payman-")
 
 
+def test_fifth_rail_nevermined_is_fee_charging():
+    q = NeverminedRail().quote(1.0)
+    assert q.fee_usd > 0
+    assert q.currency == "USD"
+    r = settle("nevermined-proto", 1.0)
+    assert r.rail == "nevermined-proto"
+    assert r.tx_ref.startswith("nvm-")
+
+
 def test_nano_rpc_seam_is_honest(monkeypatch):
     """NanoRail pays through a pluggable rpc; the example uses a local stub."""
     calls = {}
@@ -122,6 +132,7 @@ def test_example_emits_stable_marker():
     assert out.returncode == 0, out.stderr
     assert "SETTLED_ON:nano-xno FEE_USD:0.000000" in out.stdout
     assert "SETTLED_ON:usdc-evm" in out.stdout
+    assert "SETTLED_ON:nevermined-proto" in out.stdout
     assert out.stdout.strip().endswith("OK")
 
 

@@ -2,7 +2,7 @@
 
 One ``PaymentRail`` interface abstracts a settlement rail so an agent-wallet
 SDK can let an agent settle the same x402-priced payment on any rail it ships.
-This package ships four concrete rails:
+This package ships five concrete rails:
 
 * ``NanoRail``    - the Nano (XNO) rail: feeless per transfer, sub-second
   finality, self-custodial (no freezeable stablecoin, no per-tx gas).
@@ -10,6 +10,7 @@ This package ships four concrete rails:
   and network gas for every transfer.
 * ``SkyfireRail`` - Skyfire's closed US-dollar ledger, charged a fee.
 * ``PaymanRail``  - the Payman agent-payments API, charged a fee.
+* ``NeverminedRail`` - the Nevermined payments protocol, charged a fee.
 
 The adapter rebuilds no payment logic on either rail; it wraps an existing
 client per rail behind one interface (see ``scope-manifest.json`` for the
@@ -24,6 +25,7 @@ from .rails import (
     UsdcRail,
     SkyfireRail,
     PaymanRail,
+    NeverminedRail,
     rail_for,
     settle,
 )
@@ -34,6 +36,7 @@ __all__ = [
     "UsdcRail",
     "SkyfireRail",
     "PaymanRail",
+    "NeverminedRail",
     "rail_for",
     "settle",
 ]

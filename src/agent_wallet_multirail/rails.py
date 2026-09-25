@@ -238,11 +238,51 @@ class PaymanRail(PaymentRail):
         )
 
 
+class NeverminedRail(PaymentRail):
+    """Nevermined Payments Protocol (nevermined-io/payments): TS SDK resolving
+    x402 schemes (`nvm:erc4337`, `nvm:card-delegation`) on EVM/Solana.
+
+    Nevermined is a payment protocol for agents; its SDK resolves a settlement
+    scheme per request. It is the kind of protocol rail a wallet SDK might
+    already relay, and a Nano (`nano:mainnet`) scheme is additive behind the
+    same interface - the x402 exact-scheme spec already accepts it.
+    Modeled here with a protocol/processing fee like the other platform rails.
+    """
+
+    name = "nevermined-proto"
+
+    def __init__(self, fee_pct: float = 0.02):
+        self._fee_pct = fee_pct
+        self._finality_s = 2.5
+        super().__init__()
+
+    def quote(self, amount_usd: float) -> Quote:
+        fee = round(amount_usd * self._fee_pct, 6)
+        return Quote(
+            rail=self.name,
+            amount_usd=amount_usd,
+            fee_usd=fee,
+            finality_s=self._finality_s,
+            currency="USD",
+        )
+
+    def pay(self, quote: Quote) -> Settlement:
+        return Settlement(
+            rail=self.name,
+            amount_usd=quote.amount_usd,
+            fee_usd=quote.fee_usd,
+            settled=True,
+            tx_ref=f"nvm-{int(time.time())}",
+            meta={"finality_s": self._finality_s},
+        )
+
+
 _REGISTRY: Dict[str, PaymentRail] = {
     NanoRail.name: NanoRail(),
     UsdcRail.name: UsdcRail(),
     SkyfireRail.name: SkyfireRail(),
     PaymanRail.name: PaymanRail(),
+    NeverminedRail.name: NeverminedRail(),
 }
 
 

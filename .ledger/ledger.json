@@ -1847,6 +1847,11 @@
    "block": 2.2,
    "text": "PayClaw first-contact deliverable in Jc-asastu/payclaw: no documented Nano (XNO) rail → tested Nano-rail adapter example (examples/payclaw_nano_rail.py, 5 tests green, $1.00 settles XNO $0.00/0.3s vs USDC $0.06/3.0s behind the same pay() seam)",
    "at": "2026-09-25T15:17:31+00:00"
+  },
+  {
+   "block": 2.2,
+   "text": "rails.registry: 4 rails → 5 rails (add NeverminedRail 'nevermined-proto'; Nano/USDC/Skyfire/Payman/Nevermined all ship, completing the scope-named agent-wallet venues; suite 21 green, README/init/examples updated)",
+   "at": "2026-09-25T16:31:29+00:00"
   }
  ],
  "waivers": [
@@ -2546,6 +2551,16 @@
    "at": "2026-09-25T15:17:31+00:00",
    "prev": "2274a708583faa0dcddffe282576c9928dfdcf908e5c3e265b0086e3621308ab",
    "receipt": "7345f9bbcdb01789390382846e28794cc741455df522e372f74a489dbd385f67"
+  },
+  {
+   "kind": "delta",
+   "payload": {
+    "block": "2.2",
+    "sha": "66ecfa1a92bea2381d28fd6c8afa1855ec4cc0042c9a9be730978db80dbe32c8"
+   },
+   "at": "2026-09-25T16:31:29+00:00",
+   "prev": "7345f9bbcdb01789390382846e28794cc741455df522e372f74a489dbd385f67",
+   "receipt": "230cb851728e15b8c30895325433d159b53713e3dc9d9be67eafb0505f1a67d9"
   }
  ]
 }

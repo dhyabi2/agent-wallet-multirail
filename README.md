@@ -1,7 +1,7 @@
 # agent-wallet-multirail
 
 A **runnable, documented multi-rail payment adapter** for agent wallets: one
-`PaymentRail` interface, four concrete rails, and a tested example that settles
+`PaymentRail` interface, five concrete rails, and a tested example that settles
 the *same* payment on any of them. This is the exact "documented adapter with a
 working example" shape that agent-wallet SDKs (Coinbase AgentKit, Crossmint,
 Skyfire, Payman, Nevermined, 0xgasless, Trust Wallet) are asked to add for a
@@ -25,15 +25,16 @@ SDK, and see that adding Nano is additive, not a fork.
 ```python
 from agent_wallet_multirail import settle
 
-# Same $ amount, four rails, one interface:
+# Same $ amount, five rails, one interface:
 nano    = settle("nano-xno",     1.00)  # feeless, sub-second
 usdc    = settle("usdc-evm",     1.00)  # processing fee + EVM gas
 skyfire = settle("skyfire-usd",  1.00)  # Skyfire's closed US-dollar ledger + fee
 payman  = settle("payman-api",   1.00)  # Payman agent payments API + fee
+neverm  = settle("nevermined-proto", 1.00)  # Nevermined payments protocol + fee
 ```
 
 The interface (`PaymentRail`) is one abstract base class with `quote()` and
-`pay()`. All four rails live in `src/agent_wallet_multirail/rails.py`; the two the
+`pay()`. All five rails live in `src/agent_wallet_multirail/rails.py`; the two the
 comparison turns on are:
 
 - **`NanoRail`** – the Nano (XNO) rail. `quote()` reports **$0 fee** and
@@ -86,7 +87,7 @@ mainnet XNO payment from an OpenAI-agent x402 payer).
 
 ```
 src/agent_wallet_multirail/__init__.py # settle()/rail_for() dispatch
-src/agent_wallet_multirail/rails.py    # PaymentRail + NanoRail + UsdcRail + SkyfireRail + PaymanRail
+src/agent_wallet_multirail/rails.py    # PaymentRail + NanoRail + UsdcRail + SkyfireRail + PaymanRail + NeverminedRail
 examples/pay_on_any_rail.py            # runnable dispatch example (--all-rails mode)
 examples/payclaw_nano_rail.py          # PayClaw-shaped USDC-vs-Nano example
 tests/                                 # rails, dispatch, the rpc seam, the example
