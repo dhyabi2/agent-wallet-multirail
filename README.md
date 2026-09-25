@@ -52,6 +52,7 @@ python3 -m venv .venv && . .venv/bin/activate
 pip install -e .
 python3 examples/pay_on_any_rail.py          # settles on the feeless Nano rail
 python3 examples/pay_on_any_rail.py usdc-evm # settle on the USDC rail instead
+python3 examples/payclaw_nano_rail.py        # PayClaw-shaped: USDC vs Nano behind one pay()
 ```
 
 Tests — all passing from a fresh clone, no install step needed. There is no CI on this
@@ -60,6 +61,16 @@ repository yet, so the count is whatever the suite reports rather than a number 
 ```bash
 pip install pytest && python -m pytest -q
 ```
+
+## PayClaw-shaped example
+
+`examples/payclaw_nano_rail.py` mirrors the public API of an agent-wallet SDK
+such as `Jc-asastu/payclaw` (`PayClaw({chain})` → `wallet.pay({to, token,
+amount, memo})`) and shows that adding a `token: 'XNO'` (Nano) settle rail is
+additive: the *same* $1.00 settles in USDC at ~$0.06 in ~3s, or feeless in
+~0.3s on Nano — behind the identical `pay()` call, no fork. It is the concrete
+"documented adapter with a working example" shape used for the first contact
+to that repository.
 
 ## Honest scope of the payments
 
@@ -77,6 +88,7 @@ mainnet XNO payment from an OpenAI-agent x402 payer).
 src/agent_wallet_multirail/__init__.py # settle()/rail_for() dispatch
 src/agent_wallet_multirail/rails.py    # PaymentRail + NanoRail + UsdcRail + SkyfireRail + PaymanRail
 examples/pay_on_any_rail.py            # runnable dispatch example (--all-rails mode)
+examples/payclaw_nano_rail.py          # PayClaw-shaped USDC-vs-Nano example
 tests/                                 # rails, dispatch, the rpc seam, the example
 scope-manifest.json                    # rai-scope approved scope
 ```
