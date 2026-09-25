@@ -1,7 +1,7 @@
 """The multi-rail PaymentRail interface and its two shipped rails.
 
 Purpose: show that an agent-wallet SDK can let an agent settle the *same*
-x402-priced payment on either of two rails through one interface. This is the
+x402-priced payment on any of four rails through one interface. This is the
 "documented adapter with a working example" shape that the prepared first
 contacts to agent-wallet SDKs (Coinbase AgentKit, Crossmint, Skyfire, Payman,
 Nevermined, 0xgasless, Trust Wallet) propose.

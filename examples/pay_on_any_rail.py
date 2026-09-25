@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Runnable multi-rail example: one agent, one payment, two settlement rails.
+"""Runnable multi-rail example: one agent, one payment, four settlement rails.
 
-Demontrates that an agent can settle the SAME amount on either rail through
+Demonstrates that an agent can settle the SAME amount on any rail through
 the same ``PaymentRail`` interface - the shape a wallet-SDK would expose when
 it adds a Nano (XNO) entry next to an EVM/USDC one.
 
@@ -22,7 +22,7 @@ from agent_wallet_multirail import settle, rail_for
 
 
 def main() -> None:
-    # Two rails an agent-wallet SDK could expose behind one interface.
+    # The rails an agent-wallet SDK could expose behind one interface.
     rails = ["nano-xno", "usdc-evm", "skyfire-usd", "payman-api"]
 
     # Which rail to settle on this run (default: the feeless one).
@@ -35,7 +35,7 @@ def main() -> None:
     amount_usd = 1.00
 
     print("=" * 62)
-    print("Agent settles $1.00 of an x402-priced call on TWO rails")
+    print(f"Agent settles $1.00 of an x402-priced call on {len(rails)} rails")
     print("=" * 62)
     for name in rails:
         q = rail_for(name).quote(amount_usd)

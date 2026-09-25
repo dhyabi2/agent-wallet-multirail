@@ -33,7 +33,8 @@ payman  = settle("payman-api",   1.00)  # Payman agent payments API + fee
 ```
 
 The interface (`PaymentRail`) is one abstract base class with `quote()` and
-`pay()`. The two rails live in `src/agent_wallet_multirail/rails.py`:
+`pay()`. All four rails live in `src/agent_wallet_multirail/rails.py`; the two the
+comparison turns on are:
 
 - **`NanoRail`** – the Nano (XNO) rail. `quote()` reports **$0 fee** and
   **sub-second finality**. `pay()` settles through a pluggable `rpc` seam: the
@@ -53,7 +54,8 @@ python3 examples/pay_on_any_rail.py          # settles on the feeless Nano rail
 python3 examples/pay_on_any_rail.py usdc-evm # settle on the USDC rail instead
 ```
 
-Tests (10, all passing on CI and locally):
+Tests — all passing from a fresh clone, no install step needed. There is no CI on this
+repository yet, so the count is whatever the suite reports rather than a number kept here:
 
 ```bash
 pip install pytest && python -m pytest -q
@@ -75,7 +77,7 @@ mainnet XNO payment from an OpenAI-agent x402 payer).
 src/agent_wallet_multirail/__init__.py # settle()/rail_for() dispatch
 src/agent_wallet_multirail/rails.py    # PaymentRail + NanoRail + UsdcRail + SkyfireRail + PaymanRail
 examples/pay_on_any_rail.py            # runnable dispatch example (--all-rails mode)
-tests/                                 # 10 tests across rails, dispatch and the rpc seam
+tests/                                 # rails, dispatch, the rpc seam, the example
 scope-manifest.json                    # rai-scope approved scope
 ```
 
