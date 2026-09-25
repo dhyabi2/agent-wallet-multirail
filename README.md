@@ -54,6 +54,7 @@ pip install -e .
 python3 examples/pay_on_any_rail.py          # settles on the feeless Nano rail
 python3 examples/pay_on_any_rail.py usdc-evm # settle on the USDC rail instead
 python3 examples/payclaw_nano_rail.py        # PayClaw-shaped: USDC vs Nano behind one pay()
+python3 examples/gasless_x402_nano_rail.py   # 0xGasless-shaped: XNO settle rail for the x402 pay path
 ```
 
 Tests — all passing from a fresh clone, no install step needed. There is no CI on this
@@ -72,6 +73,16 @@ additive: the *same* $1.00 settles in USDC at ~$0.06 in ~3s, or feeless in
 ~0.3s on Nano — behind the identical `pay()` call, no fork. It is the concrete
 "documented adapter with a working example" shape used for the first contact
 to that repository.
+
+## 0xGasless AgentKit-shaped example
+
+`examples/gasless_x402_nano_rail.py` mirrors the 0xGasless AgentKit pay path
+(github.com/0xgasless/agentkit, issue #38): a KMS-custodied agent wallet pays an
+x402 API per call, gaslessly, in a stablecoin. It shows the same call can opt
+onto a feeless Nano (XNO) settle rail behind the identical pay surface — the
+quantified comparison billing the issue: a $1.00 call settles USDC at ~$0.06 in
+~3s (fee + network gas) versus XNO at ~$0.00 in ~0.3s. The x402 fixed-amount
+Nano scheme (`@x402nano/exact`) is the existing building block it writes on.
 
 ## Honest scope of the payments
 
