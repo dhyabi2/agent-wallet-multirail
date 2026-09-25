@@ -113,3 +113,46 @@ def test_example_emits_stable_marker():
     assert "SETTLED_ON:nano-xno FEE_USD:0.000000" in out.stdout
     assert "SETTLED_ON:usdc-evm" in out.stdout
     assert out.stdout.strip().endswith("OK")
+
+
+def test_a_node_error_is_not_a_settlement():
+    """A real rpc answering with an error has settled nothing. Reading a missing
+    `confirmed` field as success would report a payment that never happened."""
+    rail = NanoRail(rpc=lambda req: {"error": "Fork"})
+
+    result = rail.pay(rail.quote(1.0))
+
+    assert result.settled is False
+    assert "Fork" in str(result.meta.get("error", ""))
+
+
+def test_a_reply_with_no_confirmation_is_not_a_settlement():
+    rail = NanoRail(rpc=lambda req: {})
+
+    assert rail.pay(rail.quote(1.0)).settled is False
+
+
+def test_a_confirmation_with_no_block_is_not_a_settlement():
+    """Nothing to show a payer or an auditor is nothing settled."""
+    rail = NanoRail(rpc=lambda req: {"confirmed": True})
+
+    result = rail.pay(rail.quote(1.0))
+
+    assert result.settled is False
+    assert result.tx_ref == ""
+
+
+def test_a_string_true_confirmation_settles():
+    """A Nano node reports `confirmed` as the string "true", not a bool."""
+    rail = NanoRail(rpc=lambda req: {"block": "B2EC", "confirmed": "true"})
+
+    result = rail.pay(rail.quote(1.0))
+
+    assert result.settled is True
+    assert result.tx_ref == "B2EC"
+
+
+def test_a_reply_that_is_not_a_mapping_is_not_a_settlement():
+    rail = NanoRail(rpc=lambda req: None)
+
+    assert rail.pay(rail.quote(1.0)).settled is False

@@ -99,13 +99,31 @@ class NanoRail(PaymentRail):
         # report the confirmed block. A real rail would submit the signed XNO
         # block and wait for confirmation.
         resp = self._rpc({"action": "send", "amount_usd": quote.amount_usd})
+        if not isinstance(resp, dict):
+            resp = {"error": "rpc returned no reply object"}
+        block = str(resp.get("block") or "")
+        confirmed = resp.get("confirmed")
+        # Fail closed. This is the seam an SDK points at a real Nano RPC, and a
+        # node answers an error or a missing confirmation far more often than it
+        # answers a confirmation; reading either as success reports a payment
+        # that never happened. A Nano node sends `confirmed` as the string
+        # "true", so both that and a bool count.
+        settled = (
+            "error" not in resp
+            and block != ""
+            and (confirmed is True or str(confirmed).strip().lower() == "true")
+        )
+        meta: Dict[str, object] = {"finality_s": self._finality_s}
+        if not settled:
+            # Say why, or a caller sees only settled=False and has to guess.
+            meta["error"] = str(resp.get("error") or "rpc reported no confirmed block")
         return Settlement(
             rail=self.name,
             amount_usd=quote.amount_usd,
             fee_usd=self._fee_usd,
-            settled=bool(resp.get("confirmed", True)),
-            tx_ref=str(resp.get("block", "")),
-            meta={"finality_s": self._finality_s},
+            settled=settled,
+            tx_ref=block,
+            meta=meta,
         )
 
 
