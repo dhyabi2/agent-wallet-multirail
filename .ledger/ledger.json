@@ -1961,6 +1961,11 @@
    "block": 5.0,
    "text": "rails.coverage: 5 rails → 5 rails + crossmint adapter example (6 new tests, 27 green, SETTLED:TRUE ON:nano-xno proven) + verified L9 oracle",
    "at": "2026-09-25T17:45:41+00:00"
+  },
+  {
+   "block": 5.1,
+   "text": "examples.coverage: 3 examples → 4 examples (add gasless_x402_nano_rail.py behind the same pay surface, 6 new tests, 33 total green - $1.00 call settles USDC $0.06/3.0s vs XNO $0.00/0.3s, the proof backing 0xgasless/agentkit#38)",
+   "at": "2026-09-25T21:07:37+00:00"
   }
  ],
  "waivers": [
@@ -2701,6 +2706,16 @@
    "at": "2026-09-25T17:45:41+00:00",
    "prev": "7316ff1060cf272b0da47ed7b44b17274eeddb98609c1226f7d3937ca92e5cbe",
    "receipt": "204175ebb784dc2378295fd37b6dcd9ad0a86a57080a3759b703b6c11dceabca"
+  },
+  {
+   "kind": "delta",
+   "payload": {
+    "block": "5.1",
+    "sha": "a10dce4f0d5332e475520b95b2cd359a85322c999b58711ef1fa19393c3b819e"
+   },
+   "at": "2026-09-25T21:07:37+00:00",
+   "prev": "204175ebb784dc2378295fd37b6dcd9ad0a86a57080a3759b703b6c11dceabca",
+   "receipt": "d3331dd58dff1211b4e0a9261ef818e4d10bba3644c3f7c87d7fcf5a402c4847"
   }
  ]
 }
