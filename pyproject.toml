@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "A runnable multi-rail agent-payment adapter: one PaymentRail interface, Nano (XNO) and EVM/USDC rails, with a tested example for agent-wallet SDKs."
 readme = "README.md"
 requires-python = ">=3.9"
-license = { text = "MIT" }
+license = "MIT"
 authors = [{ name = "PANDeveloper001" }]
 keywords = ["nano", "xno", "x402", "agent-wallet", "payments", "ai-agents"]
 classifiers = [
@@ -25,3 +25,4 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
