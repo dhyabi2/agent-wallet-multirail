@@ -156,6 +156,21 @@
    "grounding": "oracle",
    "version": 1,
    "minted": "2026-09-25T17:42:58+00:00"
+  },
+  {
+   "id": "L10",
+   "block": 5.0,
+   "statement": "The hyperspace Nano rail adapter shows a feeless XNO settle rail in the same wallet.pay receipt shape as the other rails.",
+   "test": "cd /root/work/agent-wallet-multirail && . .venv/bin/activate && python3 examples/hyperspace_nano_rail.py && python3 -m pytest tests/test_hyperspace_nano_rail.py -q",
+   "scope": [
+    "examples/hyperspace_nano_rail.py tests/test_hyperspace_nano_rail.py"
+   ],
+   "oracle": "cd /root/work/agent-wallet-multirail && . .venv/bin/activate && python3 examples/hyperspace_nano_rail.py",
+   "expect": "SETTLED:TRUE ON:nano:mainnet",
+   "source": null,
+   "grounding": "oracle",
+   "version": 1,
+   "minted": "2026-09-26T10:43:06+00:00"
   }
  ],
  "blocks": {
@@ -2716,6 +2731,17 @@
    "at": "2026-09-25T21:07:37+00:00",
    "prev": "204175ebb784dc2378295fd37b6dcd9ad0a86a57080a3759b703b6c11dceabca",
    "receipt": "d3331dd58dff1211b4e0a9261ef818e4d10bba3644c3f7c87d7fcf5a402c4847"
+  },
+  {
+   "kind": "mint",
+   "payload": {
+    "id": "L10",
+    "block": "5",
+    "statement_sha": "e764bcdd36b45b2df48f94f70924efb272d7c641c6df8ee303afb58b2f3d25d1"
+   },
+   "at": "2026-09-26T10:43:06+00:00",
+   "prev": "d3331dd58dff1211b4e0a9261ef818e4d10bba3644c3f7c87d7fcf5a402c4847",
+   "receipt": "c495d6f4b14bec55ebc95fca0eb7c38a0ba1f55bb774e564b0233676117138f0"
   }
  ]
 }
