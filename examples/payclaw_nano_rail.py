@@ -43,7 +43,13 @@ class WalletReceipt:
 
 
 class PayClawWallet:
-    """A tiny stand-in for PayClaw's AgentWallet (policy-gated pay()).
+    """A tiny stand-in for PayClaw's AgentWallet.
+
+    PayClaw's real pay() is policy-gated; this stand-in is NOT: `policies` is
+    stored to mirror the constructor's shape and is never enforced here. For
+    an enforced spend cap on the Nano rail, see the operator mandate
+    (`agent_wallet_multirail.mandate`, README "Let your operator set a spend
+    cap once").
 
     Only the parts this example needs: a `pay()` that routes to a settlement
     rail and returns a receipt. `token` selects the rail — 'USDC' settles on
