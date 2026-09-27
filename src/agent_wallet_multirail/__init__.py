@@ -18,6 +18,10 @@ reused Nano tools). Payments in the shipped example are simulated against a
 local stub so the repository is runnable with no wallet and no keys; the seams
 to point ``NanoRail`` at a real Nano RPC / Nano x402 client are documented in
 ``README.md``.
+
+``mandate`` adds an operator mandate: a spend cap the human operator signs
+once with their own Nano key, enforced by ``NanoRail(mandate_guard=...)``
+before every send (CLI: ``mandate create|sign|verify|status|check``).
 """
 from .rails import (
     PaymentRail,
@@ -29,6 +33,7 @@ from .rails import (
     rail_for,
     settle,
 )
+from .mandate import MandateGuard, MandateRefused
 
 __all__ = [
     "PaymentRail",
@@ -39,5 +44,7 @@ __all__ = [
     "NeverminedRail",
     "rail_for",
     "settle",
+    "MandateGuard",
+    "MandateRefused",
 ]
 __version__ = "0.1.0"

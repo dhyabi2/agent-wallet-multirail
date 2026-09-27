@@ -17,7 +17,10 @@ from __future__ import annotations
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Callable, Dict
+from typing import TYPE_CHECKING, Callable, Dict
+
+if TYPE_CHECKING:  # pragma: no cover
+    from .mandate import MandateGuard
 
 
 @dataclass
@@ -76,7 +79,16 @@ class NanoRail(PaymentRail):
 
     name = "nano-xno"
 
-    def __init__(self, rpc: Callable[[Dict[str, object]], Dict[str, object]] | None = None):
+    def __init__(
+        self,
+        rpc: Callable[[Dict[str, object]], Dict[str, object]] | None = None,
+        mandate_guard: "MandateGuard | None" = None,
+    ):
+        # An operator mandate (see mandate.py): when set, every payment is
+        # checked against the operator's signed cap before the rpc is called,
+        # and pay() in USD is refused because a raw-integer cap cannot be
+        # enforced against a float dollar amount.
+        self._guard = mandate_guard
         # nano is feeless: no per-tx network fee, no gas.
         self._fee_usd = 0.0
         # nano finality is sub-second (~<0.3s typical open representative
@@ -98,7 +110,46 @@ class NanoRail(PaymentRail):
         # Simulated settlement: ask the provided rpc to make the transfer and
         # report the confirmed block. A real rail would submit the signed XNO
         # block and wait for confirmation.
+        if self._guard is not None:
+            # Fail closed: the mandate caps raw XNO, and a dollar float cannot
+            # be checked against it. Use pay_to(payee, amount_raw).
+            return Settlement(
+                rail=self.name, amount_usd=quote.amount_usd, fee_usd=self._fee_usd,
+                settled=False, tx_ref="",
+                meta={"error": "mandate_requires_raw: this rail has an operator mandate; "
+                               "pay with pay_to(payee, amount_raw)",
+                      "refusal": "mandate_requires_raw"},
+            )
         resp = self._rpc({"action": "send", "amount_usd": quote.amount_usd})
+        return self._settlement(resp, quote.amount_usd)
+
+    def pay_to(self, payee: str, amount_raw, ref: str = "") -> Settlement:
+        """Send `amount_raw` (integer raw, 1 XNO = 10**30) to `payee`.
+
+        With a mandate guard, the payment is checked (signature, expiry,
+        per-payment max, payee allow-list, remaining cap) and recorded BEFORE
+        the rpc is called; a refusal returns settled=False with the reason in
+        ``meta["refusal"]`` and the rpc is never reached.
+        """
+        from .mandate import MandateRefused, normalise_address, parse_raw
+
+        try:
+            amount = parse_raw(amount_raw, "amount_raw")
+            request = {"action": "send", "destination": normalise_address(payee),
+                       "amount_raw": str(amount)}
+            if self._guard is not None:
+                resp = self._guard.spend(payee, amount, lambda: self._rpc(request), ref=ref)
+            else:
+                resp = self._rpc(request)
+        except MandateRefused as exc:
+            return Settlement(rail=self.name, amount_usd=0.0, fee_usd=self._fee_usd,
+                              settled=False, tx_ref="",
+                              meta={"error": exc.message, "refusal": exc.reason})
+        settlement = self._settlement(resp, 0.0)
+        settlement.meta["amount_raw"] = str(amount)
+        return settlement
+
+    def _settlement(self, resp, amount_usd: float) -> Settlement:
         if not isinstance(resp, dict):
             resp = {"error": "rpc returned no reply object"}
         block = str(resp.get("block") or "")
@@ -119,7 +170,7 @@ class NanoRail(PaymentRail):
             meta["error"] = str(resp.get("error") or "rpc reported no confirmed block")
         return Settlement(
             rail=self.name,
-            amount_usd=quote.amount_usd,
+            amount_usd=amount_usd,
             fee_usd=self._fee_usd,
             settled=settled,
             tx_ref=block,

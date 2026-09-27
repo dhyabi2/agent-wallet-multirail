@@ -8,3 +8,4 @@ dist/
 .ledger/cache.json
 .ledger/tmp/
 .gitignore.bak
+build/

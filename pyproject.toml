@@ -17,6 +17,9 @@ classifiers = [
     "Programming Language :: Python :: 3",
 ]
 
+[project.scripts]
+mandate = "agent_wallet_multirail.mandate:main"
+
 [project.optional-dependencies]
 dev = ["pytest"]
 
@@ -25,4 +28,4 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["."]
+pythonpath = [".", "src"]
