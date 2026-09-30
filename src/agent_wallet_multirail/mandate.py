@@ -35,6 +35,18 @@ mandate, an unknown field, a clock before issue time - is a refusal with a
 machine-readable reason. A send whose outcome is unknown (it raised) stays
 counted as spent: under-counting is how a cap gets overrun.
 
+Revocation. A signature proves who signed, not that the permission is still
+live. The operator can withdraw a mandate before it expires by signing a
+revocation (`sign_revocation`, CLI `mandate revoke`) with the same key, over a
+different domain, so a mandate signature can never pass as a revocation or
+the reverse. The guard reads the revocation file (default
+`<mandate>.revoked.json`) before every check and spend; from its `revoked_at`
+on, every payment is refused with reason "revoked". A revocation file that is
+unreadable, edited, signed by anyone but the operator or names another
+mandate is refused too ("invalid_revocation"): a file that says stop is
+obeyed even when it is malformed. A stranger checks one with only public data
+(`verify_revocation`).
+
 What the local ledger cannot do: it stops an honest runtime from
 overspending; it cannot stop someone with shell access from deleting the
 file. For a hard ceiling, also fund the agent's account with no more than the
@@ -74,6 +86,13 @@ REQUIRED_FIELDS = (
     "purpose", "issued_at", "expires_at", "nonce",
 )
 OPTIONAL_FIELDS = ("allowed_payees",)
+
+REVOCATION_TYPE = "nano-operator-mandate-revocation"
+REVOCATION_VERSION = 1
+REVOKE_SIGN_DOMAIN = b"nano-operator-mandate-revocation/v1:"
+REVOKE_HASH_DOMAIN = b"nano-operator-mandate-revocation/v1\n"
+REVOCATION_FIELDS = ("type", "version", "mandate_hash", "operator", "revoked_at", "reason")
+REASON_MAX_CHARS = 500
 
 
 class MandateRefused(Exception):
@@ -493,6 +512,100 @@ def verify_signed(signed, now=None, agent: str = None) -> dict:
     return view
 
 
+# ------------------------------------------------------------ revocation
+
+
+def revocation_hash(revocation: dict) -> str:
+    return hashlib.blake2b(REVOKE_HASH_DOMAIN + canonical_bytes(revocation),
+                           digest_size=32).hexdigest().upper()
+
+
+def revocation_signing_message(revocation: dict) -> bytes:
+    return REVOKE_SIGN_DOMAIN + bytes.fromhex(revocation_hash(revocation))
+
+
+def _bad_revocation(message: str):
+    return MandateRefused("invalid_revocation", message + "; refusing to spend")
+
+
+def sign_revocation(mandate_hash_hex: str, operator_private_key: bytes, revoked_at: str = None,
+                    reason: str = "", operator: str = None) -> dict:
+    """Withdraw a mandate from `revoked_at` on (default: now), signed with the operator's key.
+
+    `operator` defaults to the key's own address; passing another is only useful to build a
+    deliberately wrong document in a test.
+    """
+    try:
+        if len(bytes.fromhex(mandate_hash_hex)) != 32:
+            raise ValueError
+    except (TypeError, ValueError):
+        raise MandateRefused("invalid_revocation", "mandate_hash must be 64 hex characters") from None
+    if not isinstance(reason, str) or len(reason) > REASON_MAX_CHARS:
+        raise MandateRefused("invalid_revocation", "reason must be text of at most %d characters"
+                             % REASON_MAX_CHARS)
+    at = format_time(_now()) if revoked_at is None else format_time(_parse_time(revoked_at, "revoked_at"))
+    revocation = {
+        "type": REVOCATION_TYPE, "version": REVOCATION_VERSION,
+        "mandate_hash": mandate_hash_hex.upper(),
+        "operator": operator or address_from_public_key(public_key_from_private(operator_private_key)),
+        "revoked_at": at, "reason": reason,
+    }
+    return {"revocation": revocation,
+            "signature": sign(revocation_signing_message(revocation), operator_private_key).hex().upper()}
+
+
+def verify_revocation(doc, mandate_hash_hex: str, operator: str) -> dict:
+    """Check a revocation against the mandate it must name and the operator who must have signed it.
+
+    Uses only public data. Returns {"revoked_at": str, "revoked_at_time": datetime, "reason", "operator"};
+    raises MandateRefused("invalid_revocation") on anything else.
+    """
+    if not isinstance(doc, dict) or set(doc) != {"revocation", "signature"}:
+        raise _bad_revocation("a revocation is exactly {revocation, signature}")
+    rev = doc["revocation"]
+    if not isinstance(rev, dict) or set(rev) != set(REVOCATION_FIELDS):
+        raise _bad_revocation("a revocation has exactly the fields %s" % ", ".join(REVOCATION_FIELDS))
+    if rev["type"] != REVOCATION_TYPE or rev["version"] != REVOCATION_VERSION:
+        raise _bad_revocation("not a %s v%d document" % (REVOCATION_TYPE, REVOCATION_VERSION))
+    if not isinstance(rev["mandate_hash"], str) or rev["mandate_hash"].upper() != mandate_hash_hex.upper():
+        raise _bad_revocation("the revocation names mandate %s, not %s" % (rev["mandate_hash"], mandate_hash_hex))
+    try:
+        signer = public_key_from_address(rev["operator"])
+        at = _parse_time(rev["revoked_at"], "revoked_at")
+        signature = bytes.fromhex(doc["signature"])
+    except (MandateRefused, TypeError, ValueError) as exc:
+        raise _bad_revocation("malformed revocation (%s)" % exc) from None
+    if signer != public_key_from_address(operator):
+        raise _bad_revocation("the revocation is from %s, not the mandate's operator" % rev["operator"])
+    if not isinstance(rev["reason"], str) or not verify(signature, revocation_signing_message(rev), signer):
+        raise _bad_revocation("the signature is not the operator's over this revocation")
+    return {"revoked_at": rev["revoked_at"], "revoked_at_time": at, "reason": rev["reason"],
+            "operator": rev["operator"]}
+
+
+def default_revocation_path(mandate_path: str) -> str:
+    return mandate_path + ".revoked.json"
+
+
+def check_revocation(path, view: dict, now=None):
+    """Refuse ("revoked") if a valid revocation at `path` is in force; None if there is no file.
+
+    Returns the verified revocation (in force or scheduled) or None.
+    """
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except (OSError, ValueError) as exc:
+        raise _bad_revocation("cannot read revocation %s (%s)" % (path, exc)) from None
+    rev = verify_revocation(doc, view["hash"], view["mandate"]["operator"])
+    if _now(now) >= rev["revoked_at_time"]:
+        raise MandateRefused("revoked", "the operator revoked this mandate at %s%s"
+                             % (rev["revoked_at"], (": " + rev["reason"]) if rev["reason"] else ""))
+    return rev
+
+
 def load_signed(path: str) -> dict:
     try:
         with open(path, "r", encoding="utf-8") as fh:
@@ -540,17 +653,27 @@ class MandateGuard:
     `spend` refuses with MandateRefused before calling `send` if anything is off.
     """
 
-    def __init__(self, signed: dict, ledger_path: str, agent: str = None, clock=None):
+    def __init__(self, signed: dict, ledger_path: str, agent: str = None, clock=None,
+                 revocation_path: str = None):
         self.signed = signed
         self.ledger_path = ledger_path
         self.agent = agent
         self.clock = clock  # callable returning a datetime / epoch int; None = real time
-        verify_signed(signed, now=self._time(), agent=agent)  # refuse a bad mandate at construction
+        # Where the operator's revocation would be; read before every check and spend.
+        self.revocation_path = revocation_path or ledger_path + ".revoked.json"
+        self._verify()  # refuse a bad (or revoked) mandate at construction
 
     @classmethod
-    def from_file(cls, mandate_path: str, ledger_path: str = None, agent: str = None, clock=None):
+    def from_file(cls, mandate_path: str, ledger_path: str = None, agent: str = None, clock=None,
+                  revocation_path: str = None):
         return cls(load_signed(mandate_path), ledger_path or default_ledger_path(mandate_path),
-                   agent=agent, clock=clock)
+                   agent=agent, clock=clock,
+                   revocation_path=revocation_path or default_revocation_path(mandate_path))
+
+    def _verify(self) -> dict:
+        view = verify_signed(self.signed, now=self._time(), agent=self.agent)
+        check_revocation(self.revocation_path, view, now=self._time())
+        return view
 
     def _time(self):
         return self.clock() if self.clock else None
@@ -607,7 +730,7 @@ class MandateGuard:
 
     def check(self, payee: str, amount) -> dict:
         """Dry run: would this payment be allowed right now? Records nothing."""
-        view = verify_signed(self.signed, now=self._time(), agent=self.agent)
+        view = self._verify()
         with _Locked(self.ledger_path):
             data = self._read(view["hash"])
             amount_raw = self._check(view, data, payee, amount)
@@ -620,7 +743,7 @@ class MandateGuard:
         If `send` raises, the reservation stays (status "unknown"): the money
         may have moved, and a cap that forgets an unknown payment can be overrun.
         """
-        view = verify_signed(self.signed, now=self._time(), agent=self.agent)
+        view = self._verify()
         with _Locked(self.ledger_path):
             data = self._read(view["hash"])
             amount_raw = self._check(view, data, payee, amount)
@@ -644,11 +767,17 @@ class MandateGuard:
         """Remaining cap and validity, for `mandate status`. Never raises on an expired mandate."""
         mandate = self.signed["mandate"]
         view = validate_fields(mandate)
-        valid, reason = True, None
+        valid, reason, revoked_at = True, None, None
         try:
-            verify_signed(self.signed, now=self._time(), agent=self.agent)
+            self._verify()
         except MandateRefused as exc:
             valid, reason = False, exc.reason
+        try:
+            with open(self.revocation_path, "r", encoding="utf-8") as fh:
+                rev = verify_revocation(json.load(fh), mandate_hash(mandate), mandate["operator"])
+            revoked_at = rev["revoked_at"]
+        except (OSError, ValueError, MandateRefused):
+            pass
         with _Locked(self.ledger_path):
             data = self._read(mandate_hash(mandate))
         spent = int(data["spent_raw"])
@@ -661,7 +790,7 @@ class MandateGuard:
             "remaining_raw": str(remaining), "remaining_xno": raw_to_xno(remaining),
             "per_payment_max_raw": str(view["per_payment_max_raw"]),
             "allowed_payees": mandate.get("allowed_payees"), "payments": len(data["payments"]),
-            "ledger": self.ledger_path,
+            "ledger": self.ledger_path, "revoked_at": revoked_at, "revocation": self.revocation_path,
         }
 
 
@@ -746,6 +875,13 @@ def main(argv=None) -> int:
     ck.add_argument("--amount-raw", required=True)
     ck.add_argument("--ledger")
 
+    rv = sub.add_parser("revoke", help="withdraw a mandate before it expires (signed by the operator)")
+    rv.add_argument("file")
+    rv.add_argument("--operator-key", required=True)
+    rv.add_argument("--reason", default="")
+    rv.add_argument("--at", help="UTC YYYY-MM-DDTHH:MM:SSZ the revocation takes effect (default: now)")
+    rv.add_argument("--out", help="default: <file>.revoked.json, where the guard looks")
+
     args = parser.parse_args(argv)
     try:
         if args.command == "keygen":
@@ -798,6 +934,7 @@ def main(argv=None) -> int:
             return 0
         if args.command == "verify":
             view = verify_signed(load_signed(args.file), agent=args.agent)
+            check_revocation(default_revocation_path(args.file), view)
             m = view["mandate"]
             _print({"ok": True, "hash": view["hash"], "agent": m["agent"], "operator": m["operator"],
                     "purpose": m["purpose"], "total_cap_raw": m["total_cap_raw"],
@@ -808,9 +945,24 @@ def main(argv=None) -> int:
             guard = MandateGuard.__new__(MandateGuard)
             guard.signed, guard.agent, guard.clock = load_signed(args.file), None, None
             guard.ledger_path = args.ledger or default_ledger_path(args.file)
+            guard.revocation_path = default_revocation_path(args.file)
             report = guard.status()
             _print(report)
             return 0 if report["valid"] else 1
+        if args.command == "revoke":
+            signed = load_signed(args.file)
+            key = load_private_key(args.operator_key)
+            view = verify_signed(signed, now=validate_fields(signed["mandate"])["issued_at"])
+            if public_key_from_private(key) != view["operator_pk"]:
+                raise MandateRefused("wrong_key", "this key is not the key of the mandate's operator %s"
+                                     % signed["mandate"]["operator"])
+            doc = sign_revocation(view["hash"], key, revoked_at=args.at, reason=args.reason)
+            out = args.out or default_revocation_path(args.file)
+            with open(out, "x", encoding="utf-8") as fh:
+                fh.write(json.dumps(doc, indent=2, sort_keys=True) + "\n")
+            _print({"ok": True, "written": out, "mandate_hash": view["hash"],
+                    "revoked_at": doc["revocation"]["revoked_at"]})
+            return 0
         if args.command == "check":
             guard = MandateGuard.from_file(args.file, args.ledger)
             _print(guard.check(args.payee, args.amount_raw))

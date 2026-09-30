@@ -103,6 +103,16 @@ mandate and the exact bytes to sign, and `mandate sign FILE --operator-key KEY`
 (or any Nano signer) completes it. `mandate check FILE --payee P --amount-raw N`
 is a dry run that records nothing.
 
+To withdraw a mandate before it expires, the operator signs a revocation with
+the same key: `mandate revoke mandate.json --operator-key operator.key
+--reason "task cancelled"` writes `mandate.json.revoked.json`, and from its
+`revoked_at` (default now; `--at` schedules it) every `check` and `spend` is
+refused with reason `revoked`. The revocation is signed over its own domain,
+so it can never be mistaken for a mandate signature, and anyone can check it
+with only the operator's public address (`verify_revocation`). A revocation
+file that is unreadable, edited, signed by someone else or names another
+mandate also stops spending (`invalid_revocation`).
+
 Enforcement, before every send, fails closed:
 
 ```python
