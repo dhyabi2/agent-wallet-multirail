@@ -93,6 +93,7 @@ REVOKE_SIGN_DOMAIN = b"nano-operator-mandate-revocation/v1:"
 REVOKE_HASH_DOMAIN = b"nano-operator-mandate-revocation/v1\n"
 REVOCATION_FIELDS = ("type", "version", "mandate_hash", "operator", "revoked_at", "reason")
 REASON_MAX_CHARS = 500
+LEDGER_SUFFIX = ".ledger.json"
 
 
 class MandateRefused(Exception):
@@ -641,7 +642,7 @@ class _Locked:
 
 
 def default_ledger_path(mandate_path: str) -> str:
-    return mandate_path + ".ledger.json"
+    return mandate_path + LEDGER_SUFFIX
 
 
 class MandateGuard:
@@ -660,7 +661,16 @@ class MandateGuard:
         self.agent = agent
         self.clock = clock  # callable returning a datetime / epoch int; None = real time
         # Where the operator's revocation would be; read before every check and spend.
-        self.revocation_path = revocation_path or ledger_path + ".revoked.json"
+        # It has to be the SAME file `mandate revoke` writes, which is
+        # `<mandate>.revoked.json`. This said `ledger_path + ".revoked.json"`, and
+        # for the standard layout `ledger_path` is `<mandate>.ledger.json`, so the
+        # guard looked for `<mandate>.ledger.json.revoked.json` and never found the
+        # revocation at all: built this way, a revoked mandate went on spending.
+        # `from_file` passed the right path explicitly and was unaffected, and every
+        # test named one, so nothing caught it. Recover the mandate path from the
+        # ledger path when it carries the known suffix.
+        self.revocation_path = revocation_path or default_revocation_path(
+            ledger_path[: -len(LEDGER_SUFFIX)] if ledger_path.endswith(LEDGER_SUFFIX) else ledger_path)
         self._verify()  # refuse a bad (or revoked) mandate at construction
 
     @classmethod

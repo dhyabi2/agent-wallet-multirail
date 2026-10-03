@@ -134,3 +134,32 @@ def test_cli_revoke_then_check_and_status_refuse(tmp_path, capsys):
     assert json.loads(capsys.readouterr().out)["refusal"] == "revoked"
     assert M.main(["verify", str(out)]) == 1
     assert json.loads(capsys.readouterr().out)["reason"] == "revoked"
+
+
+def test_the_guard_reads_the_file_revoke_writes_without_being_told_where(signed, tmp_path):
+    """A guard built with the constructor must find the revocation `mandate revoke` wrote.
+
+    Every other law here hands `MandateGuard` an explicit `revocation_path`, and
+    `from_file` works one out from the mandate path, so the constructor's own default was
+    never exercised. It was `ledger_path + ".revoked.json"`, and for the standard layout
+    `ledger_path` is `<mandate>.ledger.json` - so the guard looked for
+    `<mandate>.ledger.json.revoked.json`, never found the revocation, and went on spending
+    a mandate the operator had withdrawn.
+    """
+    mandate_file = tmp_path / "mandate.json"
+    mandate_file.write_text(json.dumps(signed))
+    guard = M.MandateGuard(json.loads(json.dumps(signed)),
+                           M.default_ledger_path(str(mandate_file)), clock=lambda: NOW)
+    revoked = tmp_path / "mandate.json.revoked.json"          # what `revoke` writes
+    assert guard.revocation_path == str(revoked)
+
+    sent = []
+    guard.spend(PAYEE, PER, lambda: sent.append(1))           # live mandate, still fine
+    assert sent == [1]
+
+    revoked.write_text(json.dumps(
+        M.sign_revocation(signed["hash"], OPERATOR_KEY, revoked_at="2026-09-28T00:00:00Z")))
+    with pytest.raises(M.MandateRefused) as refusal:
+        guard.spend(PAYEE, PER, lambda: sent.append(1))
+    assert refusal.value.reason == "revoked"
+    assert sent == [1], "a revoked mandate must not reach send() again"
