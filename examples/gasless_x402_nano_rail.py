@@ -109,3 +109,15 @@ def gasless_compare(amount_usd: float = 1.0) -> Dict[str, object]:
         "xno": {"fee_usd": xno["fee_usd"], "finality_s": xno["finality_s"]},
         "savings_usd": round(usdc["fee_usd"] - xno["fee_usd"], 6),
     }
+
+
+if __name__ == "__main__":  # pragma: no cover - exercised by the test suite
+    q = gasless_quote_nano(1.0)
+    out = gasless_pay_xno(q)
+    c = gasless_compare(1.0)
+    print(f"QUOTE:{q['rail']} SCHEME:{q['scheme']} FEE:{q['fee_usd']} "
+          f"FINALITY:{q['finality_s']}s")
+    print(f"SETTLED:{str(out['settled']).upper()} ON:{out['network']} "
+          f"REF:{out['tx_ref']}")
+    print(f"COMPARE usdc_fee={c['usdc']['fee_usd']} xno_fee={c['xno']['fee_usd']} "
+          f"savings={c['savings_usd']}")
