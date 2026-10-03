@@ -337,6 +337,11 @@ def xno_to_raw(text) -> int:
     if not isinstance(text, str):
         raise MandateRefused("invalid_amount", "XNO amounts must be given as a decimal string")
     t = text.strip()
+    # An amount with no digits in it is not the number zero. Without this,
+    # "" and " " partition to a whole part of "" which is defaulted to "0",
+    # and the function returns 0 raw for a string that names no amount at all.
+    if not t:
+        raise MandateRefused("invalid_amount", "an XNO amount must not be empty, got %r" % text)
     whole, dot, frac = t.partition(".")
     if not whole:
         whole = "0"
