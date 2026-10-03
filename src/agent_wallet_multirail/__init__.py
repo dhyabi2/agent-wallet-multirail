@@ -21,7 +21,7 @@ to point ``NanoRail`` at a real Nano RPC / Nano x402 client are documented in
 
 ``mandate`` adds an operator mandate: a spend cap the human operator signs
 once with their own Nano key, enforced by ``NanoRail(mandate_guard=...)``
-before every send (CLI: ``mandate create|sign|verify|status|check``).
+before every send (CLI: ``mandate create|sign|verify|status|check|revoke``).
 """
 from .rails import (
     PaymentRail,
