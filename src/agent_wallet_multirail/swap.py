@@ -704,6 +704,13 @@ def pay_nano_quote_from_usdc(
     covers the quote. That is why ``order_log`` is required to execute: without
     somewhere durable to record the order, a retry after a crash would buy the
     swap twice and spend the USDC twice.
+
+    **A retry only retries the swap, never the send.** The send is recorded in
+    ``order_log[key]["send_attempted"]`` before it is made, and a later call
+    under the same key is refused ``send_already_attempted``. Retrying the send
+    cannot be made safe here: the hop is planned to over-deliver, so a balance
+    that still covers the quote is exactly what a completed hop looks like, and
+    a second send would pay the seller twice.
     """
     if not isinstance(order_key, str) or not order_key.strip():
         raise SwapRefused("invalid_order_key", "order_key must be a non-empty string")
@@ -773,9 +780,37 @@ def pay_nano_quote_from_usdc(
             "read back rather than bought a second time"
             % (received, plan.quote.amount_raw, order.order_id, key))
 
+    # ``order_log`` makes the SWAP leg idempotent. On its own it does NOT make
+    # the SEND leg idempotent, and the send is the leg that pays the seller: a
+    # retry after a send that already happened read the balance again, found the
+    # surplus the hop is planned to leave behind, and sent the quote a SECOND
+    # time. Record the attempt BEFORE the send, the way mandate.py's ledger
+    # reserves before it spends, and refuse any retry that finds one - the money
+    # may have moved, and a cap or a quote that forgets a send overpays.
+    attempted = recorded.get("send_attempted") if recorded is not None else None
+    if attempted is not None:
+        raise SwapRefused(
+            "send_already_attempted",
+            "order_key %r has already sent (or attempted) %s raw to %s%s. Nothing was sent "
+            "again: a retry cannot tell a surplus left over from the swap apart from a swap "
+            "that has only just landed, so a second send here pays the quote twice. Check the "
+            "account's history for that block before sending anything else"
+            % (key, attempted["amount_raw"], attempted["pay_to"],
+               (" as block %s" % attempted["tx_ref"]) if attempted.get("tx_ref") else ""))
+
+    order_log[key]["send_attempted"] = {
+        "pay_to": plan.quote.pay_to,
+        "amount_raw": str(plan.quote.amount_raw),
+        "ref": key,
+        "outcome": "unknown",
+    }
+
     # The exact raw of the quote, never the amount the swap happened to yield.
     # Any surplus stays in the agent's own account.
     settlement = rail.pay_to(plan.quote.pay_to, plan.quote.amount_raw, ref=key)
+    order_log[key]["send_attempted"]["outcome"] = (
+        "settled" if getattr(settlement, "settled", False) else "not_settled")
+    order_log[key]["send_attempted"]["tx_ref"] = str(getattr(settlement, "tx_ref", "") or "")
     return SwapHopResult(plan=plan, order=order, received_raw=received, settlement=settlement)
 
 
