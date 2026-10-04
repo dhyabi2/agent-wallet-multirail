@@ -440,6 +440,83 @@ class TheHop(unittest.TestCase):
                                             "amount_raw": RAW, "ref": "k1"}])
         self.assertTrue(result.settled)
 
+    def test_a_retry_after_a_successful_send_does_not_pay_the_seller_twice(self):
+        # The hop is planned to over-deliver, so after a send the agent's own
+        # account still holds more than the quote. Without the recorded attempt
+        # the retry read that surplus as a swap that had just landed and sent
+        # the quote a second time: 2 XNO out the door for a 1 XNO quote.
+        delivered = 3 * RAW
+        state = {"balance": 0}
+        provider = RecordingProvider(to_amount="3")
+        with self.assertRaises(SwapRefused):
+            self.hop(execute=True, provider=provider, balance_raw=lambda: state["balance"])
+        state["balance"] = delivered
+        self.hop(execute=True, provider=provider, balance_raw=lambda: state["balance"])
+        state["balance"] -= RAW                      # the send left the account
+        with self.assertRaises(SwapRefused) as caught:
+            self.hop(execute=True, provider=provider, balance_raw=lambda: state["balance"])
+        self.assertEqual(caught.exception.reason, "send_already_attempted")
+        self.assertEqual(len(self.rail.calls), 1)
+        self.assertEqual(sum(c["amount_raw"] for c in self.rail.calls), RAW)
+        self.assertEqual(len(provider.created), 1)
+
+    def test_the_attempt_is_recorded_before_the_send_so_a_crash_mid_send_is_refused(self):
+        # A send that raised may still have moved the money. Under-counting an
+        # unknown outcome is how a quote gets paid twice, so it is refused too.
+        class Exploding:
+            def pay_to(self, payee, amount_raw, ref=""):
+                raise RuntimeError("the node went away mid-send")
+
+        provider = RecordingProvider(to_amount="3")
+        state = {"balance": 0}
+        balance = lambda: state["balance"]
+        with self.assertRaises(SwapRefused):
+            self.hop(execute=True, provider=provider, balance_raw=balance)
+        state["balance"] = 3 * RAW
+        with self.assertRaises(RuntimeError):
+            self.hop(execute=True, provider=provider, rail=Exploding(), balance_raw=balance)
+        self.assertEqual(self.log["k1"]["send_attempted"]["outcome"], "unknown")
+        with self.assertRaises(SwapRefused) as caught:
+            self.hop(execute=True, provider=provider, balance_raw=balance)
+        self.assertEqual(caught.exception.reason, "send_already_attempted")
+        self.assertEqual(self.rail.calls, [])
+
+    def test_the_recorded_attempt_names_the_payee_amount_and_outcome(self):
+        provider = RecordingProvider(to_amount="3")
+        state = {"balance": 0}
+        balance = lambda: state["balance"]
+        with self.assertRaises(SwapRefused):
+            self.hop(execute=True, provider=provider, balance_raw=balance)
+        state["balance"] = 3 * RAW
+        self.hop(execute=True, provider=provider, balance_raw=balance)
+        attempt = self.log["k1"]["send_attempted"]
+        self.assertEqual(attempt["pay_to"], mandate.normalise_address(SELLER))
+        self.assertEqual(attempt["amount_raw"], str(RAW))   # a string, like every other amount
+        self.assertEqual(attempt["outcome"], "settled")
+        self.assertEqual(attempt["ref"], "k1")
+
+    def test_a_send_that_did_not_settle_is_recorded_as_such_and_still_not_retried(self):
+        provider = RecordingProvider(to_amount="3")
+        state = {"balance": 0}
+        balance = lambda: state["balance"]
+        with self.assertRaises(SwapRefused):
+            self.hop(execute=True, provider=provider, balance_raw=balance)
+        state["balance"] = 3 * RAW
+        result = self.hop(execute=True, provider=provider, rail=FakeRail(settled=False),
+                          balance_raw=balance)
+        self.assertFalse(result.settled)
+        self.assertEqual(self.log["k1"]["send_attempted"]["outcome"], "not_settled")
+        with self.assertRaises(SwapRefused) as caught:
+            self.hop(execute=True, provider=provider, balance_raw=balance)
+        self.assertEqual(caught.exception.reason, "send_already_attempted")
+
+    def test_a_first_call_whose_swap_has_already_landed_still_sends(self):
+        # The control: the refusal must not cost a hop its one legitimate send.
+        balances = iter([0, 15 * 10 ** 29])
+        result = self.hop(execute=True, balance_raw=lambda: next(balances))
+        self.assertIsInstance(result, SwapHopResult)
+        self.assertEqual(len(self.rail.calls), 1)
+
     def test_a_shortfall_of_one_raw_sends_nothing(self):
         balances = iter([0, RAW - 1])
         with self.assertRaises(SwapRefused) as caught:
