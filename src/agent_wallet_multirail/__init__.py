@@ -19,6 +19,11 @@ local stub so the repository is runnable with no wallet and no keys; the seams
 to point ``NanoRail`` at a real Nano RPC / Nano x402 client are documented in
 ``README.md``.
 
+``swap`` adds the hop an agent needs when its wallet holds no XNO at all:
+USDC -> (swap provider) -> XNO in the agent's own account -> the quote's exact
+raw sent to the seller. ``pay_nano_quote_from_usdc`` is that in one call, and it
+refuses - before any money moves - the shortcuts that lose it.
+
 ``mandate`` adds an operator mandate: a spend cap the human operator signs
 once with their own Nano key, enforced by ``NanoRail(mandate_guard=...)``
 before every send (CLI: ``mandate create|sign|verify|status|check|revoke``).
@@ -34,6 +39,18 @@ from .rails import (
     settle,
 )
 from .mandate import MandateGuard, MandateRefused
+from .swap import (
+    NanoQuote,
+    NanswapProvider,
+    SwapEstimate,
+    SwapHopResult,
+    SwapLimits,
+    SwapOrder,
+    SwapPlan,
+    SwapRefused,
+    pay_nano_quote_from_usdc,
+    plan_swap_hop,
+)
 
 __all__ = [
     "PaymentRail",
@@ -46,5 +63,15 @@ __all__ = [
     "settle",
     "MandateGuard",
     "MandateRefused",
+    "NanoQuote",
+    "NanswapProvider",
+    "SwapEstimate",
+    "SwapHopResult",
+    "SwapLimits",
+    "SwapOrder",
+    "SwapPlan",
+    "SwapRefused",
+    "pay_nano_quote_from_usdc",
+    "plan_swap_hop",
 ]
 __version__ = "0.1.0"

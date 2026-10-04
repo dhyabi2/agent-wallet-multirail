@@ -1,0 +1,43 @@
+name: test
+on:
+  push:
+    branches: [master]
+  pull_request:
+jobs:
+  suite:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.10", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install pytest
+      - run: python -m pytest -q
+      # The examples import the package by name, so they need it installed;
+      # pytest finds it through pyproject's pythonpath and does not.
+      - run: pip install .
+      - name: the examples run with no network and no keys
+        run: |
+          python examples/pay_on_any_rail.py
+          python examples/pay_nano_quote_from_usdc.py
+          python examples/pay_nano_quote_from_usdc.py refuse || test $? -eq 1
+  install:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install .
+      - name: the package works from a directory with no source in it
+        run: |
+          mkdir -p /tmp/elsewhere && cd /tmp/elsewhere
+          python -c "
+          from agent_wallet_multirail import NanoQuote, plan_swap_hop, SwapRefused
+          q = NanoQuote(pay_to='nano_1111111111111111111111111111111111111111111111111111hifc8npp', amount_raw=10**30)
+          print('quote', q.amount_raw, q.network)
+          "

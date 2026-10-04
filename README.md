@@ -46,6 +46,84 @@ comparison turns on are:
 - **`UsdcRail`** – the status-quo stablecoin rail on EVM/Base. `quote()`
   reports a **processing fee + EVM gas** and multi-second finality.
 
+## Paying an XNO quote with a wallet that holds only USDC
+
+pursekeeper.dev names this gap in its own words: *"the next bet is a
+swap-in-the-payment-flow (an agent with USDC pays a Nano seller through a
+Nanswap-style hop)"*, because *"Nobody in the x402 buyer population holds
+Nano"*. A seller can advertise an XNO price all day; an agent whose wallet holds
+USDC cannot pay it.
+
+```python
+from agent_wallet_multirail import NanoQuote, NanswapProvider, pay_nano_quote_from_usdc
+
+quote = NanoQuote.from_x402_entry(seller_402["accepts"][0])   # payTo + exact raw
+
+plan = pay_nano_quote_from_usdc(                 # execute=False by default:
+    quote, my_own_nano_account, NanswapProvider(api_key=KEY),
+    from_currency="USDC", from_network="BSC",
+    from_amount="1", max_from_amount="2",        # the only bound on the spend
+    order_key="invoice-7",                       # what makes a retry idempotent
+)                                                # ...so this spends nothing
+```
+
+The hop is three legs, and **only the middle one is a swap**:
+
+```
+USDC  --(swap provider)-->  XNO in the agent's OWN account  --(send)-->  seller
+```
+
+The third leg is an ordinary feeless XNO send of the quote's **exact** raw
+amount, made by `NanoRail.pay_to` under whatever operator mandate is already in
+force. That split is the whole design, and `swap.py` refuses the shortcut that
+collapses it: pointing the swap straight at the seller looks like it saves a
+leg, and it breaks the payment three ways at once — the provider sends whatever
+the swap *yielded* rather than the quote's exact raw, the block comes from the
+provider's account so it is not bound to this agent's order, and a shortfall is
+then discovered by the seller instead of refused before the USDC is gone.
+
+```bash
+python3 examples/pay_nano_quote_from_usdc.py          # the whole hop, offline
+python3 examples/pay_nano_quote_from_usdc.py refuse   # the shortcut, refused
+```
+
+### What it refuses, and why each one costs money
+
+| refusal | what it stops |
+| --- | --- |
+| `swap_destination_is_payee` | swapping straight to the seller: wrong amount, unbound block |
+| `estimate_below_quote` | a swap whose estimated output is under the quote **plus headroom** — spending the USDC on it leaves the payment unmakeable and the USDC gone |
+| `swap_not_received_yet` | sending before the XNO has actually arrived; a one-raw shortfall sends nothing |
+| `exceeds_cap` | more USDC leaving than `max_from_amount`; a swap is custodial for the duration, and this cap is the only real bound |
+| `no_order_log` / `order_key_reused` | buying the swap twice — a retry after a crash reads the recorded order back instead of creating a second |
+| `order_destination_changed` | an order that came back paying out somewhere other than the account it was created for |
+| `provider_amount_not_a_string` | an XNO amount that arrived as a JSON number: that is a float, which cannot hold 30 decimals, so it is already lossy |
+| `provider_response_unrecognised` | a response shape this code does not know — refused, never defaulted |
+
+Every amount crosses this module as an integer (raw, micro-USDC) or an exact
+decimal string. `float` is refused everywhere, in both directions.
+
+### Two honest limits
+
+1. **No live call to a swap provider has been made.** The *requests*
+   `NanswapProvider` builds are checked against the URLs, query parameters and
+   header name of the published `nanswap` npm client 1.0.3 — the only shipped
+   client (the PyPI package of the same name is an empty sdist that installs no
+   module at all, and fails to build). The *responses* it parses are **not**
+   verified against the live API, which was unreachable from the environment
+   this was written in, so every field is validated and anything unrecognised is
+   refused rather than guessed at. The first person who can reach
+   `api.nanswap.com` should run one real quote and reconcile `_order_from`.
+2. **A swap is custodial for the duration of the hop.** USDC leaves the agent's
+   control and arrives as XNO only if the provider performs. Nothing here makes
+   that leg trustless; `max_from_amount` is required, not optional.
+
+There is also no reverse estimate for Nanswap's partner (cross-chain) routes —
+it exists only for the native pairs — so there is no way to ask "what input
+yields exactly this output" for a USDC hop. That is why the planner takes an
+input amount and refuses one whose estimated output is short, rather than
+solving for the input: the guard runs in the direction the API offers.
+
 ## Run it
 
 ```bash
