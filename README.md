@@ -135,8 +135,9 @@ python3 examples/payclaw_nano_rail.py        # PayClaw-shaped: USDC vs Nano behi
 python3 examples/gasless_x402_nano_rail.py   # 0xGasless-shaped: XNO settle rail for the x402 pay path
 ```
 
-Tests — all passing from a fresh clone, no install step needed. There is no CI on this
-repository yet, so the count is whatever the suite reports rather than a number kept here:
+Tests — all passing from a fresh clone, no install step needed. `.github/workflows/test.yml`
+runs the suite and an out-of-tree import on every push and pull request; the count is whatever
+the suite reports rather than a number kept here, which is why none is printed:
 
 ```bash
 pip install pytest && python -m pytest -q
