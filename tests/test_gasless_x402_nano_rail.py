@@ -110,3 +110,38 @@ def test_every_example_the_readme_publishes_prints_something():
         if not out.stdout.strip():
             silent.append(" ".join(args))
     assert not silent, "published but prints nothing: %s" % ", ".join(silent)
+
+
+def test_the_settle_seam_does_not_put_a_usd_float_in_a_raw_field():
+    """The one seam a real SDK wires up must not misname the unit it carries.
+
+    Both examples' docstrings say ``nano_rpc`` is "the one seam a real SDK wires
+    up -- point it at a real Nano RPC to settle a real, feeless, sub-second XNO
+    transfer". They built ``{"action": "send", "amount_raw": <the USD price>}``:
+    a float, in a field named for integer raw. 1.0 "raw" is 10**-30 XNO, not
+    $1.00 of XNO, and README's "float is refused everywhere, in both directions"
+    says the opposite. ``rails.py``'s own ``pay()`` sends ``amount_usd``; the
+    raw-denominated send is ``NanoRail.pay_to``, which carries a destination.
+    """
+    from examples.gasless_x402_nano_rail import gasless_pay_xno, gasless_quote_nano
+    from examples.hyperspace_nano_rail import hyperspace_pay, hyperspace_quote_nano
+
+    for name, call, quote in (
+        ("gasless_pay_xno", gasless_pay_xno, gasless_quote_nano(1.00)),
+        ("hyperspace_pay", hyperspace_pay, hyperspace_quote_nano(1.00)),
+    ):
+        seen = []
+
+        def spy(req, seen=seen):
+            seen.append(req)
+            return {"block": "sim-block", "confirmed": True}
+
+        call(quote, nano_rpc=spy)
+        assert len(seen) == 1, name
+        req = seen[0]
+        assert "amount_raw" not in req, (
+            "%s sends %r in a field named amount_raw; that is a USD amount, and "
+            "%r raw is %s XNO" % (name, req.get("amount_raw"),
+                                 req.get("amount_raw"),
+                                 (req.get("amount_raw") or 0) / 10 ** 30))
+        assert req["amount_usd"] == 1.00, name

@@ -62,7 +62,7 @@ python3 examples/pay_on_any_rail.py          # settles on the feeless Nano rail
 python3 examples/pay_on_any_rail.py usdc-evm # settle on the USDC rail instead
 ```
 
-Tests (10, all passing):
+Tests (all passing; the suite reports the count, so none is printed here):
 
 ```bash
 pip install pytest && python -m pytest -q
@@ -93,8 +93,8 @@ signs.
 
 ## Links
 
-- Adapter + runnable example: github.com/PANDeveloper001/agent-wallet-multirail
-- Nano x402 payer for agents: `openai-agents-nano-x402` on PyPI
+- Adapter + runnable example: github.com/dhyabi2/agent-wallet-multirail
+- Nano x402 payer for agents: github.com/dhyabi2/openai-agents-nano-x402 (not published to PyPI; install from git)
 - Live pay-per-call provider priced on XNO and gas rails: feeless402.com
 - x402 exact-scheme implementations: `@x402nano/exact` (npm),
   pursekeeper/x402-nano-exact (Python)

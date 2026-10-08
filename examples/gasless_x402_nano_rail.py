@@ -68,7 +68,13 @@ def gasless_pay_xno(quote: Dict[str, object],
     rpc = nano_rpc or (
         lambda req: {"block": f"sim-xno-{int(time.time())}", "confirmed": True}
     )
-    resp = rpc({"action": "send", "amount_raw": quote.get("amount_usd")})
+    # The field is named for what it CARRIES. `amount_usd` is the quoted
+    # price in dollars; naming it `amount_raw` made a float look like an
+    # integer raw amount, and 1.0 raw is 10**-30 XNO, not $1.00 of XNO.
+    # `rails.py`'s own `pay()` sends `amount_usd` for exactly this reason;
+    # the raw-denominated send is `NanoRail.pay_to`, which carries a
+    # destination and `str(int)` raw.
+    resp = rpc({"action": "send", "amount_usd": quote.get("amount_usd")})
     if not isinstance(resp, dict):
         resp = {"error": "nano rpc returned no reply object"}
     block = str(resp.get("block") or "")

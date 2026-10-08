@@ -6,10 +6,12 @@ EVM chains.  This file documents the shape of a SECOND, purely additive, feeless
 settlement rail — Nano (XNO) — that an agent can use when the seller's x402
 ``accepts[]`` includes a ``nano:mainnet / exact / XNO`` option.
 
-The ``crossmint_quote_nano()`` and ``crossmint_verify_xno()`` helpers
-crossmint-nano.py are pure logic with no wallet, no key and no network call —
-they *document* the seam, so a Crossmint maintainer can check the shape without
-running anything.  The ``test_crossmint_nano.py`` file in ``tests/`` verifies it.
+The ``crossmint_quote_nano()`` and ``crossmint_verify_receipt()`` helpers in
+this file are pure logic with no wallet, no key and no network call — they
+*document* the seam, so a Crossmint maintainer can check the shape without
+running anything.  ``tests/test_crossmint_nano_adapter.py`` verifies it.
+``crossmint_verify_receipt`` is a STUB and verifies nothing: see step 5 of the
+round trip below before wiring it to anything that fulfils an order.
 
 The same seam concept applies to **Coinbase AgentKit**: the SDK's wallet client
 that settles USDC via CDP would get a second ``NanoPaymentClient`` that settles
@@ -19,7 +21,7 @@ rebuilding the signing path.
 
 Usage:
 
-    python docs/crossmint_nano_adapter.py
+    python3 examples/crossmint_nano_adapter.py
 
 prints a comparison table of an $0.05 payment on USDC (Crossmint's default) vs
 a feeless Nano XNO settle rail.
@@ -104,7 +106,7 @@ Crossmint checkout with Nano settle seam
    {
      "scheme": "exact",
      "network": "nano:mainnet",
-     "amount": "5000000000000000000000000000000",  # raw XNO for $0.05
+     "amount": "50000000000000000000000000000",   # $0.05 at 1 XNO = $1.00: 0.05 * 10**30 raw
      "asset": "XNO",
      "payTo": "nano_3q7frp4s6mxo5gj7zq3zf85pfu31ezpzgpymdn9i1im9fpdgbtd9fy1wkibo",
      "maxTimeoutSeconds": 60
@@ -112,8 +114,12 @@ Crossmint checkout with Nano settle seam
 3. Agent pays: send that raw amount to payTo on the Nano network
    (feeless — $0 fee, no gas).
 4. Agent submits the Nano block hash back in the X-PAYMENT header.
-5. Crossmint-side handler verifies the receipt:
-   verify_receipt(block_hash, pay_to, amount_raw) => bool.
+5. Crossmint-side handler verifies the receipt against the PUBLIC LEDGER:
+   read the block by hash and check type='send', destination == payTo and
+   amount >= the quoted raw. `crossmint_verify_receipt` below is a STUB that
+   reads none of that -- it ignores pay_to and amount_raw entirely and answers
+   from the hash alone, which the payer chooses. It documents the seam; it is
+   not a gate, and fulfilling on it fulfils for free.
 6. If verified, the checkout/fulfilment flow proceeds unchanged
    (same webhook, same entitlement delivery).
 """
