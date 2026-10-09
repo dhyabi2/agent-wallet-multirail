@@ -770,16 +770,6 @@ def pay_nano_quote_from_usdc(
         order = recorded["order"]
         before = recorded["balance_before_raw"]
 
-    after = _integer_balance(balance_raw, "after the swap")
-    received = after - before
-    if received < plan.quote.amount_raw:
-        raise SwapRefused(
-            "swap_not_received_yet",
-            "the swap has delivered %s raw of the %s the quote needs (order %s). Nothing was "
-            "sent. Call again with order_key %r once it has settled -- the recorded order is "
-            "read back rather than bought a second time"
-            % (received, plan.quote.amount_raw, order.order_id, key))
-
     # ``order_log`` makes the SWAP leg idempotent. On its own it does NOT make
     # the SEND leg idempotent, and the send is the leg that pays the seller: a
     # retry after a send that already happened read the balance again, found the
@@ -787,6 +777,21 @@ def pay_nano_quote_from_usdc(
     # time. Record the attempt BEFORE the send, the way mandate.py's ledger
     # reserves before it spends, and refuse any retry that finds one - the money
     # may have moved, and a cap or a quote that forgets a send overpays.
+    #
+    # This is checked BEFORE the arrival check below, and the order matters. A
+    # send that happened took the quote back out of the account, so all the
+    # balance still holds is the headroom the hop planned to leave - 1% of the
+    # quote at DEFAULT_SLIPPAGE_BPS. That is less than the quote, so the arrival
+    # check fired first and the retry after a SETTLED payment was told "Nothing
+    # was sent. Call again ... once it has settled", while `send_attempted` one
+    # line away recorded the block that paid it. A caller that loops on
+    # `swap_not_received_yet` - which that message tells it to do - loops for
+    # ever on an invoice that is already paid and concludes the seller was never
+    # paid; the one sentence that stops a second out-of-band payment ("Check the
+    # account's history for that block") was the one it never saw. Checked here,
+    # the refusal that knows a send happened gets to speak first. Both branches
+    # refuse and neither sends, so nothing moves differently - only what the
+    # operator is told.
     attempted = recorded.get("send_attempted") if recorded is not None else None
     if attempted is not None:
         raise SwapRefused(
@@ -797,6 +802,16 @@ def pay_nano_quote_from_usdc(
             "account's history for that block before sending anything else"
             % (key, attempted["amount_raw"], attempted["pay_to"],
                (" as block %s" % attempted["tx_ref"]) if attempted.get("tx_ref") else ""))
+
+    after = _integer_balance(balance_raw, "after the swap")
+    received = after - before
+    if received < plan.quote.amount_raw:
+        raise SwapRefused(
+            "swap_not_received_yet",
+            "the swap has delivered %s raw of the %s the quote needs (order %s). Nothing was "
+            "sent. Call again with order_key %r once it has settled -- the recorded order is "
+            "read back rather than bought a second time"
+            % (received, plan.quote.amount_raw, order.order_id, key))
 
     order_log[key]["send_attempted"] = {
         "pay_to": plan.quote.pay_to,
