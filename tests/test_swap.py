@@ -726,3 +726,166 @@ class EndToEnd(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DebitingRail:
+    """A rail whose account balance FALLS by what it sends, the way a real one does.
+
+    Every existing test of `send_already_attempted` uses a constant balance
+    callable that stays high after `pay_to` has sent, together with a provider
+    delivering 3 XNO for a 1 XNO quote - 200% over the module's own default
+    headroom. Both together are what let those tests reach the refusal. Neither
+    can happen with a real `balance_raw()` at `DEFAULT_SLIPPAGE_BPS`, which is
+    why they could not see the ordering defect this class exists to show.
+    """
+
+    def __init__(self, account, settled=True):
+        self.account = account
+        self.calls = []
+        self._settled = settled
+
+    def pay_to(self, payee, amount_raw, ref=""):
+        self.account["balance"] -= amount_raw
+        self.calls.append({"payee": payee, "amount_raw": amount_raw, "ref": ref})
+        return type("S", (), {"settled": self._settled, "tx_ref": "block-1"})()
+
+
+class ARetryAfterAPaidSendIsToldTheTruth(unittest.TestCase):
+    """A retry after a settled payment must say a send already happened.
+
+    The hop raised `swap_not_received_yet` before it looked at `send_attempted`.
+    A send that happened takes the quote back out of the account, so all the
+    balance still holds is the headroom the hop planned to leave - 1% of the
+    quote at `DEFAULT_SLIPPAGE_BPS`, which is less than the quote. So the arrival
+    check fired first and a retry after a SETTLED payment was told "Nothing was
+    sent. Call again ... once it has settled", while `send_attempted` one line
+    away recorded the block that paid it.
+
+    `send_already_attempted` was therefore unreachable at the module's own
+    default slippage, and the sentence that stops a second out-of-band payment
+    ("Check the account's history for that block") was never shown to anybody.
+    """
+
+    def setUp(self):
+        self.account = {"balance": 0}
+        self.provider = RecordingProvider(to_amount="1.01")   # the quote + exactly 1% headroom
+        self.rail = DebitingRail(self.account)
+        self.log = {}
+
+    def hop(self, **over):
+        args = dict(from_currency="USDC", from_network="BSC", from_amount="2",
+                    max_from_amount="5", order_key="k1", rail=self.rail,
+                    order_log=self.log, execute=True,
+                    balance_raw=lambda: self.account["balance"])
+        args.update(over)
+        return pay_nano_quote_from_usdc(a_quote(), AGENT, self.provider, **args)
+
+    def pay_once(self):
+        """Create the order, let the planned 1.01 XNO land, and send."""
+        with self.assertRaises(SwapRefused) as before:
+            self.hop()
+        self.assertEqual(before.exception.reason, "swap_not_received_yet")
+        self.account["balance"] = 101 * RAW // 100
+        result = self.hop()
+        self.assertTrue(result.settlement.settled)
+        self.assertEqual(len(self.rail.calls), 1)
+        return result
+
+    def test_the_headroom_left_after_a_send_is_less_than_the_quote(self):
+        """Why the order mattered: this is the state every retry below starts in."""
+        self.pay_once()
+        self.assertEqual(self.account["balance"], RAW // 100)
+        self.assertLess(self.account["balance"], RAW,
+                        "if the surplus covered the quote the arrival check would pass and "
+                        "this whole class would be unreachable")
+
+    def test_a_retry_after_a_settled_send_says_a_send_already_happened(self):
+        self.pay_once()
+        with self.assertRaises(SwapRefused) as caught:
+            self.hop()
+        self.assertEqual(
+            caught.exception.reason, "send_already_attempted",
+            "a retry after a settled payment was told the swap had not arrived and that "
+            "nothing was sent")
+        self.assertEqual(len(self.rail.calls), 1, "nothing may be sent twice")
+
+    def test_the_retry_is_never_told_to_call_again_on_a_paid_invoice(self):
+        """The message is the harm: it told a caller to keep retrying a paid invoice.
+
+        `send_already_attempted` does say "Nothing was sent again", which is true
+        and is the point. What it must never do is the two things the arrival
+        refusal did: claim the swap has not arrived, and invite another call.
+        """
+        self.pay_once()
+        with self.assertRaises(SwapRefused) as caught:
+            self.hop()
+        message = str(caught.exception)
+        self.assertNotIn("once it has settled", message)
+        self.assertNotIn("Call again", message)
+        self.assertNotIn("has delivered", message)
+        self.assertIn("has already sent", message)
+
+    def test_the_retry_names_the_block_that_paid_so_it_can_be_checked(self):
+        self.pay_once()
+        with self.assertRaises(SwapRefused) as caught:
+            self.hop()
+        message = str(caught.exception)
+        self.assertIn("block-1", message, "the recorded block is what makes this checkable")
+        self.assertIn(str(RAW), message)
+        self.assertIn("history", message)
+
+    def test_a_send_that_did_not_settle_is_also_reported_as_attempted(self):
+        """An unknown outcome must not read as "nothing was sent" either."""
+        self.rail = DebitingRail(self.account, settled=False)
+        with self.assertRaises(SwapRefused):
+            self.hop()
+        self.account["balance"] = 101 * RAW // 100
+        self.hop()
+        with self.assertRaises(SwapRefused) as caught:
+            self.hop()
+        self.assertEqual(caught.exception.reason, "send_already_attempted")
+        self.assertEqual(len(self.rail.calls), 1)
+
+    def test_a_crash_mid_send_still_refuses_the_retry_with_a_real_balance(self):
+        class Exploding:
+            calls = []
+
+            def pay_to(self, payee, amount_raw, ref=""):
+                raise RuntimeError("the node went away mid-send")
+
+        with self.assertRaises(SwapRefused):
+            self.hop()
+        self.account["balance"] = 101 * RAW // 100
+        with self.assertRaises(RuntimeError):
+            self.hop(rail=Exploding())
+        self.assertEqual(self.log["k1"]["send_attempted"]["outcome"], "unknown")
+        with self.assertRaises(SwapRefused) as caught:
+            self.hop()
+        self.assertEqual(caught.exception.reason, "send_already_attempted")
+        self.assertEqual(self.rail.calls, [], "the money may have moved; nothing is sent again")
+
+    # -- controls: the arrival refusal must still work where it is the right one --
+
+    def test_a_swap_that_has_not_landed_is_still_told_so(self):
+        """No send has been attempted, so the arrival check is the correct answer."""
+        with self.assertRaises(SwapRefused) as caught:
+            self.hop()
+        self.assertEqual(caught.exception.reason, "swap_not_received_yet")
+        self.assertIn("Nothing was sent", str(caught.exception))
+        self.assertEqual(self.rail.calls, [])
+
+    def test_a_partial_delivery_is_still_refused_before_any_send(self):
+        with self.assertRaises(SwapRefused):
+            self.hop()
+        self.account["balance"] = RAW // 2          # half the quote
+        with self.assertRaises(SwapRefused) as caught:
+            self.hop()
+        self.assertEqual(caught.exception.reason, "swap_not_received_yet")
+        self.assertEqual(self.rail.calls, [])
+
+    def test_the_first_send_still_happens_once_the_swap_covers_the_quote(self):
+        result = self.pay_once()
+        self.assertEqual(self.rail.calls[0]["amount_raw"], RAW)
+        self.assertEqual(self.rail.calls[0]["payee"], mandate.normalise_address(SELLER))
+        self.assertEqual(self.log["k1"]["send_attempted"]["outcome"], "settled")
+        self.assertEqual(result.received_raw, 101 * RAW // 100)
