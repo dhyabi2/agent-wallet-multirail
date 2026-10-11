@@ -647,6 +647,81 @@ class Nanswap(unittest.TestCase):
             provider.create_order(a_plan())
         self.assertEqual(caught.exception.reason, "order_destination_changed")
 
+    def test_an_order_asking_for_more_input_than_the_cap_allowed_is_refused(self):
+        # `a_plan()` is planned and capped at 2 USDC in (max_from_amount="5").
+        # The order comes back asking for 500. It is the ORDER the caller funds
+        # - pay_in_address and the amount both come from it - so an unchecked
+        # order carries the pay-in straight past the operator's only bound.
+        plan = a_plan()
+        self.assertEqual(plan.from_amount, "2")
+        payload = {"id": "ord-9", "payinAddress": "0xabc",
+                   "payoutAddress": mandate.normalise_address(AGENT),
+                   "expectedAmountTo": "1.5", "expectedAmountFrom": "500"}
+        provider = NanswapProvider(api_key="KEY", transport=self.transport(payload))
+        with self.assertRaises(SwapRefused) as caught:
+            provider.create_order(plan)
+        self.assertEqual(caught.exception.reason, "order_terms_changed")
+        self.assertIn("500", str(caught.exception))
+
+    def test_an_order_asking_for_less_input_than_planned_is_allowed(self):
+        # Only MORE is a loss. A provider that wants less is not refused, or
+        # the guard would reject hops that cost the agent nothing.
+        payload = {"id": "ord-9", "payinAddress": "0xabc",
+                   "payoutAddress": mandate.normalise_address(AGENT),
+                   "expectedAmountTo": "1.5", "expectedAmountFrom": "1.5"}
+        provider = NanswapProvider(api_key="KEY", transport=self.transport(payload))
+        order = provider.create_order(a_plan())
+        self.assertEqual(order.from_amount_micro, 15 * MICRO_PER_USDC // 10)
+
+    def test_an_order_committing_to_less_xno_than_the_quote_needs_is_refused(self):
+        # The estimate cleared the quote plus headroom; this order does not.
+        # Funding it buys a swap that cannot cover the quote - the shortfall
+        # after the USDC is gone that plan_swap_hop refuses before it.
+        plan = a_plan()
+        payload = {"id": "ord-9", "payinAddress": "0xabc",
+                   "payoutAddress": mandate.normalise_address(AGENT),
+                   "expectedAmountTo": "0.000001", "expectedAmountFrom": "2"}
+        provider = NanswapProvider(api_key="KEY", transport=self.transport(payload))
+        with self.assertRaises(SwapRefused) as caught:
+            provider.create_order(plan)
+        self.assertEqual(caught.exception.reason, "order_terms_changed")
+        self.assertIn(str(plan.required_to_amount_raw), str(caught.exception))
+
+    def test_an_order_committing_to_exactly_the_required_output_is_allowed(self):
+        # The bar is the one the estimate had to clear, and it is inclusive:
+        # exactly `required_to_amount_raw` passes.
+        plan = a_plan()
+        self.assertEqual(plan.required_to_amount_raw, 101 * 10 ** 28)
+        payload = {"id": "ord-9", "payinAddress": "0xabc",
+                   "payoutAddress": mandate.normalise_address(AGENT),
+                   "expectedAmountTo": "1.01", "expectedAmountFrom": "2"}
+        provider = NanswapProvider(api_key="KEY", transport=self.transport(payload))
+        self.assertEqual(provider.create_order(plan).expected_to_amount, "1.01")
+
+    def test_an_order_whose_expected_output_is_not_a_number_is_refused(self):
+        # `_exact_decimal` only requires a string, so a non-numeric one reaches
+        # the comparison. It must refuse, not raise out of the spend leg.
+        payload = {"id": "ord-9", "payinAddress": "0xabc",
+                   "payoutAddress": mandate.normalise_address(AGENT),
+                   "expectedAmountTo": "about one", "expectedAmountFrom": "2"}
+        provider = NanswapProvider(api_key="KEY", transport=self.transport(payload))
+        with self.assertRaises(SwapRefused) as caught:
+            provider.create_order(a_plan())
+        self.assertEqual(caught.exception.reason, "order_terms_changed")
+
+    def test_an_order_paying_out_to_a_non_account_is_a_swap_refusal(self):
+        # A payoutAddress that is a string but not an account used to let a
+        # MandateRefused out of create_order. Every refusal on this path is a
+        # SwapRefused, and a caller that catches the documented one would
+        # otherwise take this as an unhandled crash at the spend leg.
+        payload = {"id": "ord-9", "payinAddress": "0xabc",
+                   "payoutAddress": "not-an-address",
+                   "expectedAmountTo": "1.5", "expectedAmountFrom": "2"}
+        provider = NanswapProvider(api_key="KEY", transport=self.transport(payload))
+        with self.assertRaises(SwapRefused) as caught:
+            provider.create_order(a_plan())
+        self.assertEqual(caught.exception.reason, "order_destination_changed")
+
     def test_a_missing_field_is_refused_rather_than_defaulted(self):
         provider = NanswapProvider(transport=self.transport({"nope": 1}))
         with self.assertRaises(SwapRefused) as caught:

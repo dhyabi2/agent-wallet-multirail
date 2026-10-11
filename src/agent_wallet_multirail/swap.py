@@ -644,14 +644,61 @@ class NanswapProvider:
             "toAddress": plan.own_address,
         })
         order = self._order_from(payload, "create-order %s" % plan.order_key)
-        # The provider is told where to send; it is still checked on the way
-        # back out. A payout address that is not the one asked for is the whole
-        # loss, so it is refused here rather than noticed later.
-        if normalise_address(order.to_address) != plan.own_address:
+        # The provider is told where to send AND on what terms, and all three
+        # are checked on the way back out. A payout address that is not the one
+        # asked for is the whole loss, so it is refused here rather than
+        # noticed later - and the two amounts are the same kind of loss, read
+        # off the same response, so they are checked in the same place.
+        try:
+            paying_out_to = normalise_address(order.to_address)
+        except MandateRefused as exc:
+            # Every refusal on this path is a SwapRefused. A payoutAddress that
+            # is a string but not an account let a MandateRefused out of the
+            # spend leg, so a caller following the documented surface
+            # (`except SwapRefused`) took it as an unhandled crash.
+            raise SwapRefused(
+                "order_destination_changed",
+                "the order came back paying out to %r, which is not a payable Nano account (%s)"
+                % (order.to_address, exc.reason)) from exc
+        if paying_out_to != plan.own_address:
             raise SwapRefused(
                 "order_destination_changed",
                 "the order came back paying out to %s, not the %s it was created for"
                 % (order.to_address, plan.own_address))
+        # What the order asks for as input. `max_from_amount` is the only bound
+        # on what the provider receives, and `plan_swap_hop` enforced it
+        # against the ESTIMATE's input. The order is free to come back asking
+        # for more, and it is the ORDER the caller funds - `pay_in_address` and
+        # the amount both come from here - so an unchecked order carries the
+        # pay-in straight past the operator's cap.
+        if order.from_amount_micro > plan.from_amount_micro:
+            raise SwapRefused(
+                "order_terms_changed",
+                "the order asks for %s %s, more than the %s this hop was planned and capped for. "
+                "Nothing has been funded: paying this order in would spend over the operator's "
+                "bound, which is the only bound a swap hop has"
+                % (micro_to_usdc(order.from_amount_micro), plan.from_currency, plan.from_amount))
+        # What the order commits to as output. The estimate had to clear the
+        # quote plus headroom before any of this was allowed; an order that
+        # cannot clear the same bar means the terms moved against the agent
+        # between the estimate and the order. Funding it buys a swap that
+        # cannot cover the quote - a shortfall found after the USDC is gone,
+        # which is the failure this module exists to refuse. Refusing here is
+        # free: the order is simply never funded.
+        try:
+            committed = xno_to_raw(order.expected_to_amount)
+        except MandateRefused as exc:
+            raise SwapRefused(
+                "order_terms_changed",
+                "the order's expected output %r is not an exact decimal XNO amount (%s)"
+                % (order.expected_to_amount, exc.reason)) from exc
+        if committed < plan.required_to_amount_raw:
+            raise SwapRefused(
+                "order_terms_changed",
+                "the order commits to %s raw, short of the %s raw the %s raw quote needs with "
+                "%d bps of headroom. Nothing has been funded: this swap could not cover the quote"
+                % (committed, plan.required_to_amount_raw, plan.quote.amount_raw,
+                   plan.slippage_bps))
         return order
 
     def _order_from(self, payload, where: str) -> SwapOrder:
