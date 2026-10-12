@@ -1137,6 +1137,67 @@ def master_entry(order, **extra):
     return {"k1": entry}
 
 
+class ReadBackUsesTheFrozenOrder(unittest.TestCase):
+    """The re-check on read-back reads checked_order, not the provider's live object."""
+
+    def fields(self):
+        return dict(order_id="ord-a", pay_in_address="0xpayin",
+                    from_amount_micro=2 * MICRO_PER_USDC,
+                    to_address=mandate.normalise_address(AGENT), expected_to_amount="1.5")
+
+    def test_a_dict_mutated_after_it_was_returned_still_settles(self):
+        order = self.fields()
+        provider, log, rail = RecordingProvider(order=order), {}, FakeRail()
+        with self.assertRaises(SwapRefused) as caught:
+            _hop(provider, log, rail, balance=lambda: 0)
+        self.assertEqual(caught.exception.reason, "swap_not_received_yet")
+        # The provider revises its own dict down to what it delivered.
+        order["expected_to_amount"] = "0.5"
+        result = _hop(provider, log, rail, balance=lambda: 2 * RAW)
+        self.assertIs(result.order, order)
+        self.assertEqual(len(provider.created), 1)
+        self.assertEqual(rail.calls, [{"payee": SELLER, "amount_raw": RAW, "ref": "k1"}])
+
+    def test_an_object_raising_on_later_access_never_escapes_raw(self):
+        fields = self.fields()
+
+        class Flaky:
+            reads = 0
+
+            def __getattr__(self, name):
+                if name not in fields:
+                    raise AttributeError(name)
+                Flaky.reads += 1
+                if Flaky.reads > len(fields) * 3:
+                    raise RuntimeError("provider went away")
+                return fields[name]
+
+        order = Flaky()
+        provider, log, rail = RecordingProvider(order=order), {}, FakeRail()
+        with self.assertRaises(SwapRefused):
+            _hop(provider, log, rail, balance=lambda: 0)
+        Flaky.reads = 10 ** 6
+        # Via checked_order, the retry settles without touching the object.
+        result = _hop(provider, log, rail, balance=lambda: 2 * RAW)
+        self.assertEqual(rail.calls[0]["amount_raw"], RAW)
+        self.assertIs(result.order, order)
+
+    def test_an_entry_without_checked_order_raising_is_a_swap_refusal(self):
+        class Raising:
+            def __getattr__(self, name):
+                raise RuntimeError("provider went away")
+
+        log = {"k1": {"plan": a_plan(), "order": Raising(), "balance_before_raw": 0,
+                      "order_checked": True}}
+        provider, rail = RecordingProvider(), FakeRail()
+        for execute in (True, False):
+            with self.assertRaises(SwapRefused) as caught:
+                _hop(provider, log, rail, balance=lambda: 2 * RAW, execute=execute)
+            self.assertEqual(caught.exception.reason, "provider_response_unrecognised")
+        self.assertEqual(provider.created, [])
+        self.assertEqual(rail.calls, [])
+
+
 class SendAlreadyAttemptedSpeaksFirst(unittest.TestCase):
     """A key that already sent says so, whatever else the entry holds."""
 

@@ -938,8 +938,22 @@ def pay_nano_quote_from_usdc(
             # so an order it accepted can still complete: the payout is still
             # this agent's own account and arrival is still checked against
             # the quote before anything is sent.
+            # The re-check reads the frozen ``checked_order`` taken when the
+            # order was recorded, never the provider's live object: a provider
+            # that edits its dict afterwards (say, expected output revised down
+            # to what was delivered) must not strand a delivered swap. Any
+            # exception reading it is a SwapRefused, never a raw one.
             if recorded.get("order_checked"):
-                _check_order_against_plan(recorded["order"], plan)
+                try:
+                    _check_order_against_plan(
+                        recorded.get("checked_order") or recorded["order"], plan)
+                except SwapRefused:
+                    raise
+                except Exception as exc:  # noqa: BLE001 - a provider object can raise anything
+                    raise SwapRefused(
+                        "provider_response_unrecognised",
+                        "reading the order recorded under order_key %r raised %s"
+                        % (key, type(exc).__name__)) from exc
 
     if not execute:
         return plan
