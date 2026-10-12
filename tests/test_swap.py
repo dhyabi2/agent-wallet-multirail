@@ -5,8 +5,11 @@ callable, so every request this module would make is asserted against the URLs
 and parameters of the published ``nanswap`` npm client 1.0.3, and every response
 it would parse is handed over as a literal.
 """
+import collections
+import dataclasses
 import json
 import unittest
+from decimal import Decimal
 
 from agent_wallet_multirail import mandate
 from agent_wallet_multirail.swap import (
@@ -22,6 +25,7 @@ from agent_wallet_multirail.swap import (
     SwapOrder,
     SwapPlan,
     SwapRefused,
+    _check_order_against_plan,
     micro_to_usdc,
     pay_nano_quote_from_usdc,
     plan_swap_hop,
@@ -687,16 +691,22 @@ class Nanswap(unittest.TestCase):
         self.assertEqual(caught.exception.reason, "order_terms_changed")
         self.assertIn(str(plan.quote.amount_raw), str(caught.exception))
 
-    def test_an_order_committing_to_exactly_the_required_output_is_allowed(self):
-        # The bar is the one the estimate had to clear, and it is inclusive:
-        # exactly `required_to_amount_raw` passes.
-        plan = a_plan()
+    def test_the_estimate_clears_quote_plus_headroom_while_the_order_clears_the_quote(self):
+        # Two bars, deliberately different. The ESTIMATE must reach quote +
+        # headroom (inclusive): exactly 1.01 XNO plans, one raw less does not.
+        # The ORDER's committed output is held to the quote (inclusive): a
+        # plan whose estimate sat at quote + headroom still accepts an order
+        # committing to the bare quote.
+        plan = a_plan(estimate=an_estimate(to_amount="1.01"))
         self.assertEqual(plan.required_to_amount_raw, 101 * 10 ** 28)
+        with self.assertRaises(SwapRefused) as caught:
+            a_plan(estimate=an_estimate(to_amount=mandate.raw_to_xno(101 * 10 ** 28 - 1)))
+        self.assertEqual(caught.exception.reason, "estimate_below_quote")
         payload = {"id": "ord-9", "payinAddress": "0xabc",
                    "payoutAddress": mandate.normalise_address(AGENT),
-                   "expectedAmountTo": "1.01", "expectedAmountFrom": "2"}
+                   "expectedAmountTo": "1", "expectedAmountFrom": "2"}
         provider = NanswapProvider(api_key="KEY", transport=self.transport(payload))
-        self.assertEqual(provider.create_order(plan).expected_to_amount, "1.01")
+        self.assertEqual(provider.create_order(plan).expected_to_amount, "1")
 
     # The output bar is the quote, not quote + headroom. The headroom absorbs
     # estimate -> delivery drift; holding the order's commitment to it spends
@@ -748,7 +758,9 @@ class Nanswap(unittest.TestCase):
         provider = NanswapProvider(api_key="KEY", transport=self.transport(payload))
         with self.assertRaises(SwapRefused) as caught:
             provider.create_order(a_plan())
-        self.assertEqual(caught.exception.reason, "order_terms_changed")
+        # An output that cannot be read is an order that cannot be verified,
+        # not one whose terms were read and found to differ.
+        self.assertEqual(caught.exception.reason, "provider_response_unrecognised")
 
     def test_an_order_paying_out_to_a_non_account_is_a_swap_refusal(self):
         # A payoutAddress that is a string but not an account used to let a
@@ -803,7 +815,8 @@ class TheHopChecksAnyProvidersOrder(unittest.TestCase):
     """pay_nano_quote_from_usdc takes any provider, so it checks the order itself.
 
     A provider other than NanswapProvider need not run the order checks; an
-    order that does not match the plan must be refused before it is recorded.
+    order that does not match the plan must be refused before anything is sent,
+    and recorded as refused so a retry does not create a second order.
     """
 
     def hop_with(self, **order_over):
@@ -820,25 +833,262 @@ class TheHopChecksAnyProvidersOrder(unittest.TestCase):
                                      order_key="k1", rail=rail, order_log=log,
                                      balance_raw=lambda: 0, execute=True)
         self.assertEqual(len(provider.created), 1)
-        self.assertEqual(log, {}, "a refused order must not be recorded")
+        # Recorded, marked refused: create_order may be the leg that funds.
+        self.assertEqual(log["k1"]["refused"]["reason"], caught.exception.reason)
+        self.assertEqual(log["k1"]["order"].order_id, "ord-x")
+        self.assertIn("recorded under order_key 'k1'", str(caught.exception))
+        self.assertNotIn("Nothing has been funded", str(caught.exception))
         self.assertEqual(rail.calls, [])
         return caught.exception
 
-    def test_an_order_asking_for_more_input_is_refused_before_recording(self):
+    def test_an_order_asking_for_more_input_is_refused_and_recorded_as_refused(self):
         exc = self.hop_with(from_amount_micro=500 * MICRO_PER_USDC)
         self.assertEqual(exc.reason, "order_terms_changed")
 
-    def test_an_order_paying_out_to_a_foreign_account_is_refused_before_recording(self):
+    def test_an_order_paying_out_to_a_foreign_account_is_refused_and_recorded_as_refused(self):
         exc = self.hop_with(to_address=seed_address(7))
         self.assertEqual(exc.reason, "order_destination_changed")
 
-    def test_an_order_paying_out_to_a_non_account_is_refused_before_recording(self):
+    def test_an_order_paying_out_to_a_non_account_is_refused_and_recorded_as_refused(self):
         exc = self.hop_with(to_address="not-an-address")
         self.assertEqual(exc.reason, "order_destination_changed")
 
-    def test_an_order_committing_under_the_quote_is_refused_before_recording(self):
+    def test_an_order_committing_under_the_quote_is_refused_and_recorded_as_refused(self):
         exc = self.hop_with(expected_to_amount=mandate.raw_to_xno(RAW - 1))
         self.assertEqual(exc.reason, "order_terms_changed")
+
+
+def _hop(provider, log, rail=None, balance=lambda: 0, **over):
+    args = dict(from_currency="USDC", from_network="BSC", from_amount="2",
+                max_from_amount="5", order_key="k1", rail=rail or FakeRail(),
+                order_log=log, balance_raw=balance, execute=True)
+    args.update(over)
+    return pay_nano_quote_from_usdc(a_quote(), AGENT, provider, **args)
+
+
+class FundingProvider(RecordingProvider):
+    """A provider that funds the swap inside create_order, as Nanswap's is documented."""
+
+    def __init__(self, order):
+        super().__init__(order=order)
+        self.funded = 0
+
+    def create_order(self, plan):
+        self.funded += 1
+        return super().create_order(plan)
+
+
+class ARefusedOrderIsRecordedAndNeverRecreated(unittest.TestCase):
+    """An order refused after create_order returned is recorded under the key.
+
+    create_order may be the leg that spends, so a retry that called it again
+    could buy a second swap. The retry reads the refusal back instead.
+    """
+
+    def short_order(self, plan_micro=2 * MICRO_PER_USDC):
+        return SwapOrder(order_id="ord-short", pay_in_address="0xpayin",
+                         from_amount_micro=plan_micro, to_address=mandate.normalise_address(AGENT),
+                         expected_to_amount=mandate.raw_to_xno(RAW - 1))
+
+    def test_a_retry_under_the_same_key_creates_no_second_order(self):
+        provider, log, rail = FundingProvider(self.short_order()), {}, FakeRail()
+        with self.assertRaises(SwapRefused) as first:
+            _hop(provider, log, rail)
+        self.assertEqual(first.exception.reason, "order_terms_changed")
+        self.assertEqual(provider.funded, 1)
+        self.assertEqual(log["k1"]["order"].order_id, "ord-short")
+        self.assertEqual(log["k1"]["refused"]["reason"], "order_terms_changed")
+        self.assertNotIn("Nothing has been funded", str(first.exception))
+        self.assertIn("not accepted", str(first.exception))
+        with self.assertRaises(SwapRefused) as second:
+            _hop(provider, log, rail, balance=lambda: 5 * RAW)
+        self.assertEqual(provider.funded, 1, "a retry must not create a second order")
+        self.assertEqual(second.exception.reason, first.exception.reason)
+        self.assertEqual(str(second.exception), str(first.exception))
+        self.assertEqual(rail.calls, [])
+
+    def test_a_dry_run_under_a_refused_key_also_raises_the_refusal(self):
+        provider, log = FundingProvider(self.short_order()), {}
+        with self.assertRaises(SwapRefused):
+            _hop(provider, log)
+        with self.assertRaises(SwapRefused) as caught:
+            _hop(provider, log, execute=False)
+        self.assertEqual(caught.exception.reason, "order_terms_changed")
+        self.assertEqual(provider.funded, 1)
+
+    def test_an_order_nanswap_refuses_is_recorded_too(self):
+        # NanswapProvider checks its own order and raises from inside
+        # create_order, after the POST. The hop records that order as well.
+        posts = []
+
+        def transport(method, url, headers, body):
+            if method == "POST":
+                posts.append(url)
+                return {"id": "ord-n", "payinAddress": "0xabc",
+                        "payoutAddress": mandate.normalise_address(AGENT),
+                        "expectedAmountTo": "0.5", "expectedAmountFrom": "2"}
+            if "limits" in url:
+                return {"min": "1", "max": "100"}
+            return {"amountTo": "1.5"}
+
+        provider, log = NanswapProvider(api_key="KEY", transport=transport), {}
+        for _ in range(2):
+            with self.assertRaises(SwapRefused) as caught:
+                _hop(provider, log)
+            self.assertEqual(caught.exception.reason, "order_terms_changed")
+        self.assertEqual(len(posts), 1)
+        self.assertEqual(log["k1"]["order"].order_id, "ord-n")
+
+
+class OrdersOfAnyShape(unittest.TestCase):
+    """provider is typed Any: an order of any shape carrying the fields is read."""
+
+    def fields(self, **over):
+        f = dict(order_id="ord-a", pay_in_address="0xpayin",
+                 from_amount_micro=2 * MICRO_PER_USDC,
+                 to_address=mandate.normalise_address(AGENT), expected_to_amount="1.5")
+        f.update(over)
+        return f
+
+    def executes_with(self, order):
+        provider, log, rail = RecordingProvider(order=order), {}, FakeRail()
+        balances = iter([0, 2 * RAW])
+        result = _hop(provider, log, rail, balance=lambda: next(balances))
+        self.assertIsInstance(result, SwapHopResult)
+        self.assertIsInstance(result.order, SwapOrder)
+        self.assertEqual(result.order.order_id, "ord-a")
+        self.assertEqual(rail.calls[0]["amount_raw"], RAW)
+        return result
+
+    def test_a_namedtuple(self):
+        Order = collections.namedtuple("Order", list(self.fields()))
+        self.executes_with(Order(**self.fields()))
+
+    def test_a_dataclass(self):
+        @dataclasses.dataclass
+        class Order:
+            order_id: str
+            pay_in_address: str
+            from_amount_micro: int
+            to_address: str
+            expected_to_amount: str
+        self.executes_with(Order(**self.fields()))
+
+    def test_a_dict(self):
+        result = self.executes_with(dict(self.fields(), status="waiting"))
+        self.assertEqual(result.order.status, "waiting")
+
+    def test_an_object_missing_a_field_is_unrecognised(self):
+        # Pins the unrecognised-order guard: without it the missing attribute
+        # escapes as an AttributeError/KeyError instead of a SwapRefused.
+        for name in ("order_id", "pay_in_address", "from_amount_micro", "to_address",
+                     "expected_to_amount"):
+            partial = self.fields()
+            del partial[name]
+            Order = collections.namedtuple("Order", list(partial))
+            for order in (Order(**partial), partial):
+                with self.assertRaises(SwapRefused, msg=name) as caught:
+                    _check_order_against_plan(order, a_plan())
+                self.assertEqual(caught.exception.reason, "provider_response_unrecognised")
+                self.assertIn(name, str(caught.exception))
+
+    def test_something_that_is_not_an_order_at_all_is_unrecognised(self):
+        for order in (None, "ord-1", 42, ["ord-1"]):
+            with self.assertRaises(SwapRefused, msg=repr(order)) as caught:
+                _check_order_against_plan(order, a_plan())
+            self.assertEqual(caught.exception.reason, "provider_response_unrecognised")
+
+
+class OrderFieldsThatCannotBeVerified(unittest.TestCase):
+    """An order that cannot be read is unrecognised; one that differs is changed."""
+
+    def check(self, **over):
+        fields = dict(order_id="ord-a", pay_in_address="0xpayin",
+                      from_amount_micro=2 * MICRO_PER_USDC,
+                      to_address=mandate.normalise_address(AGENT), expected_to_amount="1.5")
+        fields.update(over)
+        return _check_order_against_plan(SwapOrder(**fields), a_plan())
+
+    def refused(self, reason, **over):
+        with self.assertRaises(SwapRefused, msg=repr(over)) as caught:
+            self.check(**over)
+        self.assertEqual(caught.exception.reason, reason, repr(over))
+
+    def test_an_int_output_is_whole_xno(self):
+        self.assertEqual(self.check(expected_to_amount=2).expected_to_amount, 2)
+        # 0 XNO is read, and is short of the quote: terms, not shape.
+        self.refused("order_terms_changed", expected_to_amount=0)
+
+    def test_a_decimal_output_is_exact(self):
+        self.check(expected_to_amount=Decimal("1.5"))
+        self.check(expected_to_amount=Decimal("1"))
+        self.refused("order_terms_changed",
+                     expected_to_amount=Decimal(mandate.raw_to_xno(RAW - 1)))
+
+    def test_a_float_output_is_refused(self):
+        self.refused("provider_amount_not_a_string", expected_to_amount=1.5)
+        self.refused("provider_amount_not_a_string", expected_to_amount=2.0)
+
+    def test_a_missing_or_unparseable_output_is_unrecognised(self):
+        for value in (None, "", "  ", "about one", "-2", -2, True, Decimal("NaN"),
+                      Decimal("Infinity"), b"1.5", ["1.5"]):
+            self.refused("provider_response_unrecognised", expected_to_amount=value)
+
+    def test_a_missing_payout_address_is_unrecognised(self):
+        for value in (None, "", "   ", 7):
+            self.refused("provider_response_unrecognised", to_address=value)
+        # A string that is read and is not our account is a changed destination.
+        self.refused("order_destination_changed", to_address="not-an-address")
+        self.refused("order_destination_changed", to_address=seed_address(7))
+
+    def test_a_missing_pay_in_address_is_unrecognised(self):
+        for value in (None, "", "  ", 7):
+            self.refused("provider_response_unrecognised", pay_in_address=value)
+
+    def test_a_non_positive_input_is_unrecognised(self):
+        for value in (0, -1, -2 * MICRO_PER_USDC):
+            self.refused("provider_response_unrecognised", from_amount_micro=value)
+
+    def test_the_input_must_be_an_int_and_not_a_bool(self):
+        # Pins the type guard: True and 2.0 are both <= the planned input and
+        # > 0, so only the int/bool check refuses them.
+        for value in (True, 2.0, 1.5, "2000000", Decimal(2)):
+            self.refused("provider_response_unrecognised", from_amount_micro=value)
+
+
+class ARecordedOrderIsCheckedOnReadBack(unittest.TestCase):
+    """A log written before orders were checked, or edited by hand, is not trusted."""
+
+    def log_with(self, **over):
+        fields = dict(order_id="ord-old", pay_in_address="0xpayin",
+                      from_amount_micro=2 * MICRO_PER_USDC,
+                      to_address=mandate.normalise_address(AGENT), expected_to_amount="1.5")
+        fields.update(over)
+        return {"k1": {"plan": a_plan(), "order": SwapOrder(**fields), "balance_before_raw": 0}}
+
+    def test_a_bad_recorded_order_is_refused_and_nothing_is_created_or_sent(self):
+        for over, reason in (({"to_address": seed_address(7)}, "order_destination_changed"),
+                             ({"expected_to_amount": "0.5"}, "order_terms_changed"),
+                             ({"from_amount_micro": 9 * MICRO_PER_USDC}, "order_terms_changed"),
+                             ({"pay_in_address": ""}, "provider_response_unrecognised")):
+            provider, rail, log = RecordingProvider(), FakeRail(), self.log_with(**over)
+            with self.assertRaises(SwapRefused, msg=repr(over)) as caught:
+                _hop(provider, log, rail, balance=lambda: 5 * RAW)
+            self.assertEqual(caught.exception.reason, reason)
+            self.assertEqual(provider.created, [])
+            self.assertEqual(rail.calls, [])
+
+    def test_a_good_recorded_dict_order_is_read_back_and_sent(self):
+        provider, rail = RecordingProvider(), FakeRail()
+        log = self.log_with()
+        log["k1"]["order"] = dict(order_id="ord-old", pay_in_address="0xpayin",
+                                  from_amount_micro=2 * MICRO_PER_USDC,
+                                  to_address=mandate.normalise_address(AGENT),
+                                  expected_to_amount="1.5")
+        result = _hop(provider, log, rail, balance=lambda: 2 * RAW)
+        self.assertEqual(provider.created, [])
+        self.assertEqual(result.order.order_id, "ord-old")
+        self.assertEqual(rail.calls[0]["amount_raw"], RAW)
 
 
 # ----------------------------------------------------- end to end, no network

@@ -44,6 +44,7 @@ import json
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
+from decimal import Decimal
 from typing import Any, Callable, Dict, Mapping, Optional
 
 from .mandate import (
@@ -101,8 +102,12 @@ class SwapRefused(Exception):
     """The hop was refused before any money moved.
 
     ``reason`` is a stable machine-readable code; ``str(exc)`` is for a human.
-    Every refusal in this module is raised before the leg it guards, so a caught
-    ``SwapRefused`` means nothing was spent by the leg that raised it.
+    Every refusal in this module is raised before the leg it guards. One kind
+    is raised after a leg that may already have spent: an order refused once
+    ``create_order`` has returned it. A provider can fund inside
+    ``create_order``, so that refusal does not claim nothing was funded; it
+    says the order was not accepted and was recorded under the order_key, so
+    a retry never creates a second one.
     """
 
     def __init__(self, reason: str, message: str = ""):
@@ -347,22 +352,116 @@ class SwapHopResult:
         return bool(getattr(self.settlement, "settled", False))
 
 
-def _check_order_against_plan(order: SwapOrder, plan: SwapPlan) -> None:
+_ORDER_FIELDS = ("order_id", "pay_in_address", "from_amount_micro", "to_address",
+                 "expected_to_amount")
+
+
+def _normalise_order(order: Any) -> SwapOrder:
+    """Any provider's order as a ``SwapOrder``, or ``provider_response_unrecognised``.
+
+    ``provider`` is typed ``Any``, and a provider returning a namedtuple, its own
+    dataclass or a plain dict worked before orders were checked. Any object
+    exposing the ``SwapOrder`` attributes, or a mapping carrying them as keys, is
+    read; one that lacks any of them is an order this module cannot verify, and
+    is refused rather than guessed at. Values are copied as given -- validating
+    them is ``_check_order_against_plan``'s job.
+    """
+    if isinstance(order, SwapOrder):
+        return order
+    if isinstance(order, Mapping):
+        missing = [name for name in _ORDER_FIELDS if name not in order]
+        get = order.get
+    else:
+        missing = [name for name in _ORDER_FIELDS if not hasattr(order, name)]
+        get = lambda name, default=None: getattr(order, name, default)  # noqa: E731
+    if missing:
+        raise SwapRefused("provider_response_unrecognised",
+                          "create_order returned %s carrying no %s; an order this module "
+                          "cannot read is not one it can verify"
+                          % (type(order).__name__, ", ".join(missing)))
+    raw = get("raw", None)
+    if raw is None:
+        raw = dict(order) if isinstance(order, Mapping) else {}
+    return SwapOrder(
+        order_id=get("order_id"),
+        pay_in_address=get("pay_in_address"),
+        from_amount_micro=get("from_amount_micro"),
+        to_address=get("to_address"),
+        expected_to_amount=get("expected_to_amount"),
+        status=str(get("status", "created") or "created"),
+        raw=raw,
+    )
+
+
+def _committed_output_raw(value) -> int:
+    """The order's committed output in raw, or ``provider_response_unrecognised``.
+
+    An exact decimal XNO string, or an exact number: ``int`` (whole XNO, so ``2``
+    is 2 XNO) or a finite ``Decimal``. A ``float`` is refused as
+    ``provider_amount_not_a_string`` -- it cannot hold 30 decimals, so the value
+    is already lossy. A missing, empty or unparseable amount is an order whose
+    terms cannot be read at all, which is not the same thing as terms that differ.
+    """
+    if isinstance(value, float):
+        raise SwapRefused(
+            "provider_amount_not_a_string",
+            "the order's expected output %r is a float, which cannot hold 30 decimals; give "
+            "it as a decimal string, an int or a Decimal" % (value,))
+    if isinstance(value, bool):
+        text = None
+    elif isinstance(value, int):
+        text = str(value)
+    elif isinstance(value, Decimal):
+        text = format(value, "f") if value.is_finite() else None
+    elif isinstance(value, str):
+        text = value
+    else:
+        text = None
+    if text is None:
+        raise SwapRefused(
+            "provider_response_unrecognised",
+            "the order's expected output is %r (%s), not an exact XNO amount; an order whose "
+            "output cannot be read cannot be verified" % (value, type(value).__name__))
+    try:
+        return xno_to_raw(text)
+    except MandateRefused as exc:
+        raise SwapRefused(
+            "provider_response_unrecognised",
+            "the order's expected output %r is not an exact decimal XNO amount (%s); an order "
+            "whose output cannot be read cannot be verified" % (value, exc.reason)) from exc
+
+
+def _check_order_against_plan(order: Any, plan: SwapPlan) -> SwapOrder:
     """Refuse a created order whose terms are not the ones the plan was checked on.
 
     Run on whatever ``create_order`` returns -- by ``NanswapProvider`` itself
-    and again by ``pay_nano_quote_from_usdc`` before the order is recorded --
-    because ``provider`` there is any object, and an order from a provider that
-    skips these checks would otherwise be recorded and funded unchecked.
+    and again by ``pay_nano_quote_from_usdc`` before the order is recorded, and
+    once more on an order read back out of ``order_log`` -- because ``provider``
+    there is any object, and an order from a provider that skips these checks
+    would otherwise be recorded and funded unchecked. Returns the order as a
+    ``SwapOrder``.
+
+    Two kinds of refusal, kept apart on purpose: ``provider_response_unrecognised``
+    for an order that cannot be verified at all (a field missing, empty, of the
+    wrong type, or unparseable), and ``order_destination_changed`` /
+    ``order_terms_changed`` for an order that was read and differs from the plan.
     """
-    if not isinstance(order, SwapOrder):
+    order = _normalise_order(order)
+
+    # Where the caller is told to pay the provider. An order without one is
+    # not a fundable order, whatever else it says.
+    if not isinstance(order.pay_in_address, str) or not order.pay_in_address.strip():
         raise SwapRefused("provider_response_unrecognised",
-                          "create_order returned %s, not a SwapOrder" % type(order).__name__)
+                          "the order carries no pay-in address (got %r)" % (order.pay_in_address,))
+
     # The provider is told where to send AND on what terms, and all three
     # are checked on the way back out. A payout address that is not the one
     # asked for is the whole loss, so it is refused here rather than
     # noticed later - and the two amounts are the same kind of loss, read
     # off the same response, so they are checked in the same place.
+    if not isinstance(order.to_address, str) or not order.to_address.strip():
+        raise SwapRefused("provider_response_unrecognised",
+                          "the order carries no payout address (got %r)" % (order.to_address,))
     try:
         paying_out_to = normalise_address(order.to_address)
     except MandateRefused as exc:
@@ -386,36 +485,35 @@ def _check_order_against_plan(order: SwapOrder, plan: SwapPlan) -> None:
     # the planned input is funding a swap nobody checked.
     from_micro = order.from_amount_micro
     if isinstance(from_micro, bool) or not isinstance(from_micro, int):
-        raise SwapRefused("order_terms_changed",
+        raise SwapRefused("provider_response_unrecognised",
                           "the order's input must be integer micro-USDC, got %s"
                           % type(from_micro).__name__)
+    if from_micro <= 0:
+        raise SwapRefused("provider_response_unrecognised",
+                          "the order's input must be greater than zero, got %d" % from_micro)
     if from_micro > plan.from_amount_micro:
         raise SwapRefused(
             "order_terms_changed",
-            "the order asks for %s %s, more than the %s %s this hop was planned on. Nothing has "
-            "been funded: the order's input exceeds the planned input"
+            "the order asks for %s %s, more than the %s %s this hop was planned on: the "
+            "order's input exceeds the planned input"
             % (micro_to_usdc(from_micro), plan.from_currency, plan.from_amount,
                plan.from_currency))
-    # What the order commits to as output, held to the quote itself. The
-    # slippage headroom is there to absorb drift between the estimate and
-    # what is delivered; holding the order's expectation to quote+headroom
-    # would spend the whole buffer before any money moved and refuse swaps
-    # that cover the quote. The send-time check (`received >= quote`) is the
-    # same bar. An order committing to less than the quote cannot cover it
+    # What the order commits to as output, held to the quote itself, inclusive
+    # -- not to quote + headroom. The headroom is there to absorb drift between
+    # the estimate and what is delivered, and the estimate still has to clear
+    # quote + headroom in `plan_swap_hop`; holding the order's commitment to it
+    # as well would spend the whole buffer before any money moved and refuse
+    # swaps that cover the quote. The send-time check (`received >= quote`) is
+    # the same bar. An order committing to less than the quote cannot cover it
     # even if delivered in full - a shortfall found after the USDC is gone,
     # which is the failure this module exists to refuse.
-    try:
-        committed = xno_to_raw(order.expected_to_amount)
-    except MandateRefused as exc:
-        raise SwapRefused(
-            "order_terms_changed",
-            "the order's expected output %r is not an exact decimal XNO amount (%s)"
-            % (order.expected_to_amount, exc.reason)) from exc
+    committed = _committed_output_raw(order.expected_to_amount)
     if committed < plan.quote.amount_raw:
         raise SwapRefused(
             "order_terms_changed",
-            "the order commits to %s raw, short of the %s raw quote. Nothing has been funded: "
-            "this swap could not cover the quote" % (committed, plan.quote.amount_raw))
+            "the order commits to %s raw, short of the %s raw quote: this swap could not "
+            "cover the quote" % (committed, plan.quote.amount_raw))
+    return order
 
 
 def _required_with_headroom(amount_raw: int, slippage_bps: int) -> int:
@@ -715,8 +813,14 @@ class NanswapProvider:
             "toAddress": plan.own_address,
         })
         order = self._order_from(payload, "create-order %s" % plan.order_key)
-        _check_order_against_plan(order, plan)
-        return order
+        try:
+            return _check_order_against_plan(order, plan)
+        except SwapRefused as exc:
+            # The order exists at the provider by now. Hand it to the caller
+            # with the refusal so ``pay_nano_quote_from_usdc`` can record it
+            # under the order_key, and a retry does not create a second one.
+            exc.order = order
+            raise
 
     def _order_from(self, payload, where: str) -> SwapOrder:
         order_id = _field(payload, "id", str, where)
@@ -808,6 +912,14 @@ def pay_nano_quote_from_usdc(
                 "order_key %r already belongs to a hop paying %s raw to %s; a different quote "
                 "under the same key would read that order as this one's"
                 % (key, plan.quote.amount_raw, plan.quote.pay_to))
+        # An order recorded as refused stays refused: raise the same refusal
+        # and never call create_order again under this key.
+        refused = recorded.get("refused")
+        if refused is not None:
+            raise SwapRefused(refused["reason"], refused["message"])
+        # A log written before orders were checked, or edited by hand, is not
+        # trusted: the recorded order is held to the plan on every read-back.
+        recorded["order"] = _check_order_against_plan(recorded["order"], plan)
 
     if not execute:
         return plan
@@ -828,10 +940,23 @@ def pay_nano_quote_from_usdc(
 
     if recorded is None:
         before = _integer_balance(balance_raw, "before the swap")
-        order = provider.create_order(plan)
-        # Checked here as well as in NanswapProvider: `provider` is any object,
-        # and an order is only recorded once its terms match the plan.
-        _check_order_against_plan(order, plan)
+        try:
+            order = provider.create_order(plan)
+        except SwapRefused as exc:
+            # A provider that checks its own order (NanswapProvider does)
+            # refuses after the order was created; it attaches that order.
+            created = getattr(exc, "order", None)
+            if created is None:
+                raise
+            _record_refused_order(order_log, key, plan, created, before, exc)
+        # Checked here as well as in NanswapProvider: `provider` is any object.
+        # A refused order is recorded too, marked refused: create_order may be
+        # the call that funds the swap, so a retry that called it again could
+        # buy a second one. The retry reads the refusal back instead.
+        try:
+            order = _check_order_against_plan(order, plan)
+        except SwapRefused as exc:
+            _record_refused_order(order_log, key, plan, order, before, exc)
         order_log[key] = {"plan": plan, "order": order, "balance_before_raw": before}
     else:
         order = recorded["order"]
@@ -894,6 +1019,30 @@ def pay_nano_quote_from_usdc(
         "settled" if getattr(settlement, "settled", False) else "not_settled")
     order_log[key]["send_attempted"]["tx_ref"] = str(getattr(settlement, "tx_ref", "") or "")
     return SwapHopResult(plan=plan, order=order, received_raw=received, settlement=settlement)
+
+
+def _record_refused_order(order_log: Dict[str, Any], key: str, plan: SwapPlan, order: Any,
+                          before: int, exc: SwapRefused) -> None:
+    """Record an order that was created and then refused, and raise its refusal.
+
+    The order is recorded under the key BEFORE raising, because create_order
+    may already have spent: ``NanswapProvider`` documents it as the leg that
+    spends. A retry under the same key reads this record back and raises the
+    same refusal instead of creating a second order.
+    """
+    message = (
+        "%s. The order (%s) was not accepted and was recorded under order_key %r; a retry "
+        "under that key raises this refusal again and creates no second order. If the "
+        "provider funds orders when they are created, settle it with the provider"
+        % (exc.message, getattr(order, "order_id", None) if not isinstance(order, Mapping)
+           else order.get("order_id"), key))
+    order_log[key] = {
+        "plan": plan,
+        "order": order,
+        "balance_before_raw": before,
+        "refused": {"reason": exc.reason, "message": message},
+    }
+    raise SwapRefused(exc.reason, message) from exc
 
 
 def _refuse_unplannable(quote: NanoQuote, own_address) -> None:
