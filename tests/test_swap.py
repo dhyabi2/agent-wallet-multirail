@@ -685,7 +685,7 @@ class Nanswap(unittest.TestCase):
         with self.assertRaises(SwapRefused) as caught:
             provider.create_order(plan)
         self.assertEqual(caught.exception.reason, "order_terms_changed")
-        self.assertIn(str(plan.required_to_amount_raw), str(caught.exception))
+        self.assertIn(str(plan.quote.amount_raw), str(caught.exception))
 
     def test_an_order_committing_to_exactly_the_required_output_is_allowed(self):
         # The bar is the one the estimate had to clear, and it is inclusive:
@@ -697,6 +697,47 @@ class Nanswap(unittest.TestCase):
                    "expectedAmountTo": "1.01", "expectedAmountFrom": "2"}
         provider = NanswapProvider(api_key="KEY", transport=self.transport(payload))
         self.assertEqual(provider.create_order(plan).expected_to_amount, "1.01")
+
+    # The output bar is the quote, not quote + headroom. The headroom absorbs
+    # estimate -> delivery drift; holding the order's commitment to it spends
+    # the whole buffer before money moves and refuses swaps that cover the
+    # quote. Quote 0.0001 XNO at 100 bps: required is 0.000101.
+
+    def _small_plan(self):
+        return a_plan(quote=a_quote(amount_raw=10 ** 26),
+                      estimate=an_estimate(to_amount="0.000102"))
+
+    def _order_for(self, plan, expected_to):
+        payload = {"id": "ord-9", "payinAddress": "0xabc",
+                   "payoutAddress": mandate.normalise_address(AGENT),
+                   "expectedAmountTo": expected_to, "expectedAmountFrom": "2"}
+        return NanswapProvider(api_key="KEY", transport=self.transport(payload)).create_order(plan)
+
+    def test_an_order_committing_inside_the_headroom_band_is_allowed(self):
+        plan = self._small_plan()
+        self.assertEqual(plan.required_to_amount_raw, 101 * 10 ** 24)
+        self.assertEqual(self._order_for(plan, "0.0001009").expected_to_amount, "0.0001009")
+
+    def test_an_order_committing_to_exactly_the_quote_is_allowed(self):
+        plan = self._small_plan()
+        self.assertEqual(self._order_for(plan, "0.0001").expected_to_amount, "0.0001")
+
+    def test_an_order_committing_one_raw_under_the_quote_is_refused(self):
+        plan = self._small_plan()
+        one_under = mandate.raw_to_xno(plan.quote.amount_raw - 1)
+        with self.assertRaises(SwapRefused) as caught:
+            self._order_for(plan, one_under)
+        self.assertEqual(caught.exception.reason, "order_terms_changed")
+
+    def test_the_input_refusal_names_the_planned_input_not_the_cap(self):
+        payload = {"id": "ord-9", "payinAddress": "0xabc",
+                   "payoutAddress": mandate.normalise_address(AGENT),
+                   "expectedAmountTo": "1.5", "expectedAmountFrom": "3"}
+        provider = NanswapProvider(api_key="KEY", transport=self.transport(payload))
+        with self.assertRaises(SwapRefused) as caught:
+            provider.create_order(a_plan())
+        self.assertIn("exceeds the planned input", str(caught.exception))
+        self.assertNotIn("cap", str(caught.exception))
 
     def test_an_order_whose_expected_output_is_not_a_number_is_refused(self):
         # `_exact_decimal` only requires a string, so a non-numeric one reaches
@@ -756,6 +797,48 @@ class Nanswap(unittest.TestCase):
         order = provider.order("ord-9")
         self.assertEqual(order.status, "sending")
         self.assertIn("/get-order-partner?id=ord-9", self.seen[0]["url"])
+
+
+class TheHopChecksAnyProvidersOrder(unittest.TestCase):
+    """pay_nano_quote_from_usdc takes any provider, so it checks the order itself.
+
+    A provider other than NanswapProvider need not run the order checks; an
+    order that does not match the plan must be refused before it is recorded.
+    """
+
+    def hop_with(self, **order_over):
+        plan = a_plan()
+        fields = dict(order_id="ord-x", pay_in_address="0xpayin",
+                      from_amount_micro=plan.from_amount_micro,
+                      to_address=plan.own_address, expected_to_amount="1.5")
+        fields.update(order_over)
+        provider = RecordingProvider(order=SwapOrder(**fields))
+        rail, log = FakeRail(), {}
+        with self.assertRaises(SwapRefused) as caught:
+            pay_nano_quote_from_usdc(a_quote(), AGENT, provider, from_currency="USDC",
+                                     from_network="BSC", from_amount="2", max_from_amount="5",
+                                     order_key="k1", rail=rail, order_log=log,
+                                     balance_raw=lambda: 0, execute=True)
+        self.assertEqual(len(provider.created), 1)
+        self.assertEqual(log, {}, "a refused order must not be recorded")
+        self.assertEqual(rail.calls, [])
+        return caught.exception
+
+    def test_an_order_asking_for_more_input_is_refused_before_recording(self):
+        exc = self.hop_with(from_amount_micro=500 * MICRO_PER_USDC)
+        self.assertEqual(exc.reason, "order_terms_changed")
+
+    def test_an_order_paying_out_to_a_foreign_account_is_refused_before_recording(self):
+        exc = self.hop_with(to_address=seed_address(7))
+        self.assertEqual(exc.reason, "order_destination_changed")
+
+    def test_an_order_paying_out_to_a_non_account_is_refused_before_recording(self):
+        exc = self.hop_with(to_address="not-an-address")
+        self.assertEqual(exc.reason, "order_destination_changed")
+
+    def test_an_order_committing_under_the_quote_is_refused_before_recording(self):
+        exc = self.hop_with(expected_to_amount=mandate.raw_to_xno(RAW - 1))
+        self.assertEqual(exc.reason, "order_terms_changed")
 
 
 # ----------------------------------------------------- end to end, no network

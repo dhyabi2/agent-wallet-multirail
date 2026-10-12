@@ -96,7 +96,8 @@ python3 examples/pay_nano_quote_from_usdc.py refuse   # the shortcut, refused
 | `swap_not_received_yet` | sending before the XNO has actually arrived; a one-raw shortfall sends nothing |
 | `exceeds_cap` | more USDC leaving than `max_from_amount`; a swap is custodial for the duration, and this cap is the only real bound |
 | `no_order_log` / `order_key_reused` | buying the swap twice — a retry after a crash reads the recorded order back instead of creating a second |
-| `order_destination_changed` | an order that came back paying out somewhere other than the account it was created for |
+| `order_destination_changed` | an order that came back paying out somewhere other than the account it was created for, or to something that is not a Nano account at all |
+| `order_terms_changed` | an order that asks for more input than the hop was planned on, or commits to less XNO than the quote; checked on any provider's order before it is recorded |
 | `provider_amount_not_a_string` | an XNO amount that arrived as a JSON number: that is a float, which cannot hold 30 decimals, so it is already lossy |
 | `provider_response_unrecognised` | a response shape this code does not know — refused, never defaulted |
 
