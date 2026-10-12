@@ -955,8 +955,12 @@ class OrdersOfAnyShape(unittest.TestCase):
         balances = iter([0, 2 * RAW])
         result = _hop(provider, log, rail, balance=lambda: next(balances))
         self.assertIsInstance(result, SwapHopResult)
-        self.assertIsInstance(result.order, SwapOrder)
-        self.assertEqual(result.order.order_id, "ord-a")
+        # The provider's own object is returned and recorded, as on master.
+        self.assertIs(result.order, order)
+        self.assertIs(log["k1"]["order"], order)
+        self.assertIsInstance(log["k1"]["checked_order"], SwapOrder)
+        self.assertEqual(log["k1"]["checked_order"].order_id, "ord-a")
+        self.assertTrue(log["k1"]["order_checked"])
         self.assertEqual(rail.calls[0]["amount_raw"], RAW)
         return result
 
@@ -975,8 +979,31 @@ class OrdersOfAnyShape(unittest.TestCase):
         self.executes_with(Order(**self.fields()))
 
     def test_a_dict(self):
-        result = self.executes_with(dict(self.fields(), status="waiting"))
-        self.assertEqual(result.order.status, "waiting")
+        order = dict(self.fields(), status="waiting")
+        result = self.executes_with(order)
+        self.assertEqual(result.order["status"], "waiting")
+
+    def test_an_object_keeps_its_extra_attributes(self):
+        Order = collections.namedtuple("Order", list(self.fields()) + ["tracking_url"])
+        order = Order(tracking_url="https://example.invalid/t/1", **self.fields())
+        result = self.executes_with(order)
+        self.assertEqual(result.order.tracking_url, "https://example.invalid/t/1")
+
+    def test_an_order_whose_fields_raise_is_recorded_as_unrecognised(self):
+        # A provider object can raise anything from __str__/__getattr__. It is
+        # recorded as refused and raised as a SwapRefused, never let out raw.
+        class Boom:
+            def __str__(self):
+                raise RuntimeError("provider bug")
+        order = dict(self.fields(), status=Boom())
+        provider, log, rail = RecordingProvider(order=order), {}, FakeRail()
+        for _ in range(2):
+            with self.assertRaises(SwapRefused) as caught:
+                _hop(provider, log, rail)
+            self.assertEqual(caught.exception.reason, "provider_response_unrecognised")
+        self.assertEqual(len(provider.created), 1)
+        self.assertIs(log["k1"]["order"], order)
+        self.assertEqual(rail.calls, [])
 
     def test_an_object_missing_a_field_is_unrecognised(self):
         # Pins the unrecognised-order guard: without it the missing attribute
@@ -1014,10 +1041,12 @@ class OrderFieldsThatCannotBeVerified(unittest.TestCase):
             self.check(**over)
         self.assertEqual(caught.exception.reason, reason, repr(over))
 
-    def test_an_int_output_is_whole_xno(self):
-        self.assertEqual(self.check(expected_to_amount=2).expected_to_amount, 2)
-        # 0 XNO is read, and is short of the quote: terms, not shape.
-        self.refused("order_terms_changed", expected_to_amount=0)
+    def test_a_plain_int_output_is_refused(self):
+        # A bare int amount is the smallest unit everywhere else in the
+        # package. Read as whole XNO, half an XNO of raw (10**30 // 2) would
+        # become 5 * 10**29 XNO and a short order would pass.
+        for value in (RAW // 2, 2, 0, True, False):
+            self.refused("provider_response_unrecognised", expected_to_amount=value)
 
     def test_a_decimal_output_is_exact(self):
         self.check(expected_to_amount=Decimal("1.5"))
@@ -1064,7 +1093,8 @@ class ARecordedOrderIsCheckedOnReadBack(unittest.TestCase):
                       from_amount_micro=2 * MICRO_PER_USDC,
                       to_address=mandate.normalise_address(AGENT), expected_to_amount="1.5")
         fields.update(over)
-        return {"k1": {"plan": a_plan(), "order": SwapOrder(**fields), "balance_before_raw": 0}}
+        return {"k1": {"plan": a_plan(), "order": SwapOrder(**fields), "balance_before_raw": 0,
+                       "order_checked": True}}
 
     def test_a_bad_recorded_order_is_refused_and_nothing_is_created_or_sent(self):
         for over, reason in (({"to_address": seed_address(7)}, "order_destination_changed"),
@@ -1087,8 +1117,125 @@ class ARecordedOrderIsCheckedOnReadBack(unittest.TestCase):
                                   expected_to_amount="1.5")
         result = _hop(provider, log, rail, balance=lambda: 2 * RAW)
         self.assertEqual(provider.created, [])
-        self.assertEqual(result.order.order_id, "ord-old")
+        self.assertIs(result.order, log["k1"]["order"])
         self.assertEqual(rail.calls[0]["amount_raw"], RAW)
+
+    def test_a_dry_run_does_not_overwrite_the_stored_order(self):
+        log = self.log_with()
+        stored = log["k1"]["order"] = dict(order_id="ord-old", pay_in_address="0xpayin",
+                                           from_amount_micro=2 * MICRO_PER_USDC,
+                                           to_address=mandate.normalise_address(AGENT),
+                                           expected_to_amount="1.5")
+        _hop(RecordingProvider(), log, execute=False)
+        self.assertIs(log["k1"]["order"], stored)
+
+
+def master_entry(order, **extra):
+    """An order_log entry as master wrote it: no order_checked, no refused."""
+    entry = {"plan": a_plan(), "order": order, "balance_before_raw": 0}
+    entry.update(extra)
+    return {"k1": entry}
+
+
+class SendAlreadyAttemptedSpeaksFirst(unittest.TestCase):
+    """A key that already sent says so, whatever else the entry holds."""
+
+    def test_a_master_entry_that_sent_names_the_block(self):
+        # The order would fail today's check (committed under the quote); the
+        # operator must still hear that the seller was paid, and by which block.
+        order = SwapOrder(order_id="ord-m", pay_in_address="0xpayin",
+                          from_amount_micro=2 * MICRO_PER_USDC,
+                          to_address=mandate.normalise_address(AGENT),
+                          expected_to_amount="0.5")
+        sent = {"pay_to": SELLER, "amount_raw": str(RAW), "ref": "k1",
+                "outcome": "settled", "tx_ref": "BLOCK123"}
+        for checked in (False, True):
+            log = master_entry(order, send_attempted=dict(sent))
+            if checked:
+                log["k1"]["order_checked"] = True
+            provider, rail = RecordingProvider(), FakeRail()
+            with self.assertRaises(SwapRefused) as caught:
+                _hop(provider, log, rail, balance=lambda: RAW // 100)
+            self.assertEqual(caught.exception.reason, "send_already_attempted")
+            self.assertIn("BLOCK123", str(caught.exception))
+            self.assertEqual(provider.created, [])
+            self.assertEqual(rail.calls, [])
+
+    def test_a_refused_entry_is_never_sent(self):
+        provider = FundingProvider(SwapOrder(
+            order_id="ord-short", pay_in_address="0xpayin",
+            from_amount_micro=2 * MICRO_PER_USDC, to_address=mandate.normalise_address(AGENT),
+            expected_to_amount=mandate.raw_to_xno(RAW - 1)))
+        log, rail = {}, FakeRail()
+        for balance in (lambda: 0, lambda: 10 * RAW):
+            with self.assertRaises(SwapRefused) as caught:
+                _hop(provider, log, rail, balance=balance)
+            self.assertEqual(caught.exception.reason, "order_terms_changed")
+        self.assertEqual(rail.calls, [])
+        self.assertNotIn("send_attempted", log["k1"])
+
+
+class ALogFromAnOlderVersion(unittest.TestCase):
+    """Entries without order_checked are read back as they were written."""
+
+    def pending(self):
+        # A custom-provider order master accepted. Today's check would refuse
+        # it (an int input that is fine, but a plain-int output), so it must
+        # not be re-checked or it could never complete.
+        order = {"order_id": "ord-m", "pay_in_address": "0xpayin",
+                 "from_amount_micro": 2 * MICRO_PER_USDC,
+                 "to_address": mandate.normalise_address(AGENT), "expected_to_amount": 2}
+        return order, master_entry(order)
+
+    def test_a_pending_master_entry_settles_once_the_xno_arrives(self):
+        order, log = self.pending()
+        provider, rail = RecordingProvider(), FakeRail()
+        with self.assertRaises(SwapRefused) as caught:
+            _hop(provider, log, rail, balance=lambda: RAW // 2)
+        self.assertEqual(caught.exception.reason, "swap_not_received_yet")
+        self.assertIn("ord-m", str(caught.exception))
+        result = _hop(provider, log, rail, balance=lambda: 2 * RAW)
+        self.assertIs(result.order, order)
+        self.assertEqual(provider.created, [])
+        self.assertEqual(rail.calls, [{"payee": SELLER, "amount_raw": RAW, "ref": "k1"}])
+
+    def test_a_dry_run_on_a_master_entry_returns_the_plan(self):
+        order, log = self.pending()
+        plan = _hop(RecordingProvider(), log, execute=False)
+        self.assertIsInstance(plan, SwapPlan)
+        self.assertIs(log["k1"]["order"], order)
+
+
+class NanswapUnreadableReplyIsRecorded(unittest.TestCase):
+    def test_a_reply_without_a_payout_address_is_not_posted_twice(self):
+        posts = []
+
+        def transport(method, url, headers, body):
+            if method == "POST":
+                posts.append(url)
+                return {"id": "ord-n", "payinAddress": "0xabc",
+                        "expectedAmountTo": "1.5", "expectedAmountFrom": "2"}
+            if "limits" in url:
+                return {"min": "1", "max": "100"}
+            return {"amountTo": "1.5"}
+
+        provider, log = NanswapProvider(api_key="KEY", transport=transport), {}
+        for _ in range(2):
+            with self.assertRaises(SwapRefused) as caught:
+                _hop(provider, log)
+            self.assertEqual(caught.exception.reason, "provider_response_unrecognised")
+        self.assertEqual(len(posts), 1)
+        self.assertEqual(log["k1"]["order"]["order_id"], "ord-n")
+        self.assertEqual(log["k1"]["order"]["pay_in_address"], "0xabc")
+        self.assertIn("ord-n", str(caught.exception))
+
+    def test_a_refusal_before_any_order_exists_stays_retryable(self):
+        # No API key: refused before the POST, so nothing is recorded.
+        provider, log = NanswapProvider(transport=lambda *a: {"amountTo": "1.5", "min": "1"}), {}
+        with self.assertRaises(SwapRefused) as caught:
+            _hop(provider, log)
+        self.assertEqual(caught.exception.reason, "no_api_key")
+        self.assertEqual(log, {})
 
 
 # ----------------------------------------------------- end to end, no network

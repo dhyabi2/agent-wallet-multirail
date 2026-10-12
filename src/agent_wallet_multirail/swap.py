@@ -396,8 +396,11 @@ def _normalise_order(order: Any) -> SwapOrder:
 def _committed_output_raw(value) -> int:
     """The order's committed output in raw, or ``provider_response_unrecognised``.
 
-    An exact decimal XNO string, or an exact number: ``int`` (whole XNO, so ``2``
-    is 2 XNO) or a finite ``Decimal``. A ``float`` is refused as
+    An exact decimal XNO string, or a finite ``Decimal`` of XNO. A plain ``int``
+    is refused: everywhere else in this package a bare int amount is the
+    smallest unit (raw, micro-USDC), so reading one as whole XNO would inflate a
+    raw amount by 10**30, and reading it as raw would guess the other way. A
+    ``float`` is refused as
     ``provider_amount_not_a_string`` -- it cannot hold 30 decimals, so the value
     is already lossy. A missing, empty or unparseable amount is an order whose
     terms cannot be read at all, which is not the same thing as terms that differ.
@@ -406,12 +409,8 @@ def _committed_output_raw(value) -> int:
         raise SwapRefused(
             "provider_amount_not_a_string",
             "the order's expected output %r is a float, which cannot hold 30 decimals; give "
-            "it as a decimal string, an int or a Decimal" % (value,))
-    if isinstance(value, bool):
-        text = None
-    elif isinstance(value, int):
-        text = str(value)
-    elif isinstance(value, Decimal):
+            "it as a decimal string or a Decimal" % (value,))
+    if isinstance(value, Decimal):
         text = format(value, "f") if value.is_finite() else None
     elif isinstance(value, str):
         text = value
@@ -812,7 +811,18 @@ class NanswapProvider:
             "fromAddress": "",
             "toAddress": plan.own_address,
         })
-        order = self._order_from(payload, "create-order %s" % plan.order_key)
+        try:
+            order = self._order_from(payload, "create-order %s" % plan.order_key)
+        except SwapRefused as exc:
+            # The POST went through, so an order may exist even though its
+            # reply cannot be read. Attach what is known so the hop records it
+            # and a retry does not POST a second one.
+            known = {"raw": payload}
+            if isinstance(payload, Mapping):
+                known["order_id"] = payload.get("id")
+                known["pay_in_address"] = payload.get("payinAddress")
+            exc.order = known
+            raise
         try:
             return _check_order_against_plan(order, plan)
         except SwapRefused as exc:
@@ -912,14 +922,24 @@ def pay_nano_quote_from_usdc(
                 "order_key %r already belongs to a hop paying %s raw to %s; a different quote "
                 "under the same key would read that order as this one's"
                 % (key, plan.quote.amount_raw, plan.quote.pay_to))
-        # An order recorded as refused stays refused: raise the same refusal
-        # and never call create_order again under this key.
-        refused = recorded.get("refused")
-        if refused is not None:
-            raise SwapRefused(refused["reason"], refused["message"])
-        # A log written before orders were checked, or edited by hand, is not
-        # trusted: the recorded order is held to the plan on every read-back.
-        recorded["order"] = _check_order_against_plan(recorded["order"], plan)
+        # A key that already sent is left to the send_already_attempted
+        # refusal further down, which names the block: nothing below may
+        # speak before it, or an operator is not told the seller was paid.
+        if recorded.get("send_attempted") is None:
+            # An order recorded as refused stays refused: raise the same
+            # refusal and never call create_order again under this key.
+            refused = recorded.get("refused")
+            if refused is not None:
+                raise SwapRefused(refused["reason"], refused["message"])
+            # An entry this version recorded carries ``order_checked``; it is
+            # held to the plan again on read-back (a hand edit is not
+            # trusted) and must still pass. An entry without the mark was
+            # written by an older version and is read back as it was written,
+            # so an order it accepted can still complete: the payout is still
+            # this agent's own account and arrival is still checked against
+            # the quote before anything is sent.
+            if recorded.get("order_checked"):
+                _check_order_against_plan(recorded["order"], plan)
 
     if not execute:
         return plan
@@ -953,11 +973,21 @@ def pay_nano_quote_from_usdc(
         # A refused order is recorded too, marked refused: create_order may be
         # the call that funds the swap, so a retry that called it again could
         # buy a second one. The retry reads the refusal back instead.
+        # The provider's own object is what is recorded and returned; the
+        # normalised SwapOrder is only what the checks read.
         try:
-            order = _check_order_against_plan(order, plan)
+            checked = _check_order_against_plan(order, plan)
         except SwapRefused as exc:
             _record_refused_order(order_log, key, plan, order, before, exc)
-        order_log[key] = {"plan": plan, "order": order, "balance_before_raw": before}
+        except Exception as exc:  # noqa: BLE001 - a provider object can raise anything
+            _record_refused_order(
+                order_log, key, plan, order, before,
+                SwapRefused("provider_response_unrecognised",
+                            "reading the order create_order returned raised %s"
+                            % type(exc).__name__),
+                cause=exc)
+        order_log[key] = {"plan": plan, "order": order, "checked_order": checked,
+                          "order_checked": True, "balance_before_raw": before}
     else:
         order = recorded["order"]
         before = recorded["balance_before_raw"]
@@ -1003,7 +1033,7 @@ def pay_nano_quote_from_usdc(
             "the swap has delivered %s raw of the %s the quote needs (order %s). Nothing was "
             "sent. Call again with order_key %r once it has settled -- the recorded order is "
             "read back rather than bought a second time"
-            % (received, plan.quote.amount_raw, order.order_id, key))
+            % (received, plan.quote.amount_raw, _order_id(order), key))
 
     order_log[key]["send_attempted"] = {
         "pay_to": plan.quote.pay_to,
@@ -1021,8 +1051,19 @@ def pay_nano_quote_from_usdc(
     return SwapHopResult(plan=plan, order=order, received_raw=received, settlement=settlement)
 
 
+def _order_id(order: Any):
+    """The order's id for a message, never raising: the object is the provider's."""
+    try:
+        if isinstance(order, Mapping):
+            return order.get("order_id")
+        return getattr(order, "order_id", None)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _record_refused_order(order_log: Dict[str, Any], key: str, plan: SwapPlan, order: Any,
-                          before: int, exc: SwapRefused) -> None:
+                          before: int, exc: SwapRefused, cause: Optional[BaseException] = None
+                          ) -> None:
     """Record an order that was created and then refused, and raise its refusal.
 
     The order is recorded under the key BEFORE raising, because create_order
@@ -1034,15 +1075,14 @@ def _record_refused_order(order_log: Dict[str, Any], key: str, plan: SwapPlan, o
         "%s. The order (%s) was not accepted and was recorded under order_key %r; a retry "
         "under that key raises this refusal again and creates no second order. If the "
         "provider funds orders when they are created, settle it with the provider"
-        % (exc.message, getattr(order, "order_id", None) if not isinstance(order, Mapping)
-           else order.get("order_id"), key))
+        % (exc.message, _order_id(order), key))
     order_log[key] = {
         "plan": plan,
         "order": order,
         "balance_before_raw": before,
         "refused": {"reason": exc.reason, "message": message},
     }
-    raise SwapRefused(exc.reason, message) from exc
+    raise SwapRefused(exc.reason, message) from (cause or exc)
 
 
 def _refuse_unplannable(quote: NanoQuote, own_address) -> None:
