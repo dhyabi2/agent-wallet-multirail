@@ -83,8 +83,9 @@ provider's account so it is not bound to this agent's order, and a shortfall is
 then discovered by the seller instead of refused before the USDC is gone.
 
 ```bash
+pip install -e .                                      # the examples import the package
 python3 examples/pay_nano_quote_from_usdc.py          # the whole hop, offline
-python3 examples/pay_nano_quote_from_usdc.py refuse   # the shortcut, refused
+python3 examples/pay_nano_quote_from_usdc.py refuse   # the shortcut, refused (exits 1 by design)
 ```
 
 ### What it refuses, and why each one costs money
