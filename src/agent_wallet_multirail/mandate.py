@@ -626,6 +626,16 @@ def _refuse_float(text):
     raise MandateRefused("invalid_amount", "a non-integer number (%s) appears in the file" % text)
 
 
+def _is_raw_digits(value) -> bool:
+    """True for a decimal-integer STRING of raw, as the ledger is written.
+
+    `str.isdigit()` alone is true of every Unicode digit, and `int()` reads those
+    too, so the check is ASCII as well - the same reason `parse_raw` and
+    `usdc_to_micro` spell it that way.
+    """
+    return isinstance(value, str) and value.isdigit() and value.isascii()
+
+
 # ------------------------------------------------------------ ledger + guard
 
 
@@ -699,12 +709,49 @@ class MandateGuard:
             return {"mandate_hash": mandate_hash_hex, "spent_raw": "0", "payments": []}
         try:
             with open(self.ledger_path, "r", encoding="utf-8") as fh:
-                data = json.load(fh)
+                # The MANDATE is read with parse_float=_refuse_float; the ledger was
+                # read with a plain json.load, and the total check below is an
+                # `int()` sum. So an entry `{"amount_raw": 1.9}` beside
+                # `"spent_raw": "1"` was truncated to 1, agreed with the total and
+                # was accepted. Money is an integer count of raw end to end, and
+                # that includes the file that says how much of the cap is gone.
+                try:
+                    data = json.load(fh, parse_float=_refuse_float,
+                                     parse_constant=_refuse_float)
+                except MandateRefused as exc:
+                    raise MandateRefused(
+                        "ledger_corrupt",
+                        "ledger %s holds a non-integer number (%s); refusing to spend"
+                        % (self.ledger_path, exc.message)) from None
+            if not isinstance(data, dict):
+                raise MandateRefused("ledger_corrupt", "ledger %s is not a JSON object"
+                                     % self.ledger_path)
             if data.get("mandate_hash") != mandate_hash_hex:
                 raise MandateRefused("ledger_mismatch", "ledger %s belongs to another mandate (%s)"
                                      % (self.ledger_path, data.get("mandate_hash")))
-            spent = int(data["spent_raw"]) if str(data["spent_raw"]).isdigit() else None
-            if spent is None or sum(int(p["amount_raw"]) for p in data["payments"]) != spent:
+            # Shape first, arithmetic second. The total check is
+            # `sum(int(p["amount_raw"]) for p in data["payments"]) != spent`, and an
+            # EMPTY dict or string iterates to nothing and sums to 0 - so a ledger
+            # of `{"spent_raw": "0", "payments": {}}` read as a healthy ledger with
+            # nothing spent. `check()` and `status()` reported the whole cap intact,
+            # and `spend()` then died on `payments.append` with an AttributeError
+            # instead of a MandateRefused: an unhandled crash for a caller following
+            # the documented surface, on the path that spends. A `payments` this
+            # code cannot count is a spend total it cannot vouch for.
+            payments = data.get("payments")
+            if not isinstance(payments, list):
+                raise MandateRefused(
+                    "ledger_corrupt",
+                    "ledger %s has a %s for its payments, not a list; refusing to spend"
+                    % (self.ledger_path, type(payments).__name__))
+            for position, payment in enumerate(payments):
+                if not isinstance(payment, dict) or not _is_raw_digits(payment.get("amount_raw")):
+                    raise MandateRefused(
+                        "ledger_corrupt",
+                        "ledger %s payment %d has no decimal-integer amount_raw; refusing to spend"
+                        % (self.ledger_path, position))
+            spent = int(data["spent_raw"]) if _is_raw_digits(data["spent_raw"]) else None
+            if spent is None or sum(int(p["amount_raw"]) for p in payments) != spent:
                 raise MandateRefused("ledger_corrupt", "ledger totals do not add up")
             return data
         except MandateRefused:
