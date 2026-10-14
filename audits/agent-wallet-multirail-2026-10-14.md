@@ -1,10 +1,14 @@
 # agent-wallet-multirail — audit 2026-10-14
 
-The Nano leg only, per TIER0.md: the USDC, Skyfire, Payman and Nevermined rails were read
-only where the Nano path passes through them, and nothing on them was changed or
-"improved". The USDC->XNO swap is in scope as the bridge INTO XNO that TIER0 allows.
+The Nano leg only: the USDC, Skyfire, Payman and Nevermined rails were read only where
+the Nano path passes through them, and nothing on them was changed or "improved". The
+USDC->XNO swap is in scope as the bridge into XNO.
 
-**Nothing was changed. This is a clean pass with one finding recorded for the owner.**
+**No code was changed. This is not a clean pass: three findings are open for the owner.**
+`create_order` sends no `fromNetwork`/`toNetwork` (`swap.py:640-644`); the mandate ledger
+reads a `{}` or `""` `payments` as no payments and truncates a float `amount_raw`
+(`mandate.py:702-707`); and `NanoRail.pay()` without a mandate sends a float
+`amount_usd` (`rails.py:123`). Details below.
 
 ## What I checked
 
@@ -31,27 +35,32 @@ only where the Nano path passes through them, and nothing on them was changed or
 - The suite: **199 passed** (`python3 -m pytest -q`), before and after — nothing was
   touched.
 
-## What I probed and could not break
+## What I probed
 
-- **Amounts.** No float reaches an amount anywhere on the Nano path. `parse_raw` refuses
+- **Amounts.** Once a mandate is set, no float reaches an amount on the Nano path. Without
+  one it does: `NanoRail.pay()` sends `{"action": "send", "amount_usd": quote.amount_usd}`
+  to the rpc (`rails.py:123`), a dollar float (open finding, below). `parse_raw` refuses
   `bool`, `float`, a leading zero, a non-ASCII digit, a non-positive value and anything
   over `2**128-1`; `xno_to_raw` refuses an empty string (so `""` cannot partition to
   `0`), more than 30 decimals and non-ASCII digits; `_required_with_headroom` computes
   `ceil(amount * (10000 + bps) / 10000)` in integers and refuses a result over the
   128-bit ceiling. `NanoRail.pay()` in USD is refused outright once a mandate is set,
   because a raw cap cannot be checked against a dollar float.
-- **The allow-list is compared on public keys, not strings** (`_check`:
-  `public_key_from_address(payee) not in view["payee_keys"]`), so the `nano_` and `xrb_`
+- **The allow-list is compared on public keys, not strings** (`_check`, `mandate.py:737`:
+  `payee_pk not in view["payee_keys"]`, with `payee_pk = public_key_from_address(payee)`), so the `nano_` and `xrb_`
   spellings of one allowed payee both pass — the failure mode its siblings had.
 - **The signature check is strict.** `verify` rejects a signature or key of the wrong
   length, a point that is not on the curve, and `s >= L`; the signed message is a domain
   tag plus the mandate hash, so a mandate signature cannot double as a Nano block
   signature, and the revocation has its own domain.
-- **The ledger fails closed.** A total that does not add up, a ledger belonging to
-  another mandate, an unreadable file, a non-digit `spent_raw` and a non-list `payments`
-  are each a refusal; a send that raises stays counted as spent (`status: "unknown"`).
-  `load_signed` reads JSON with `parse_float=_refuse_float`, so a float in the document
-  is refused rather than rounded.
+- **The ledger mostly fails closed, but not fully.** A total that does not add up, a
+  ledger belonging to another mandate, an unreadable file and a non-digit `spent_raw` are
+  each a refusal, and a send that raises stays counted as spent (`status: "unknown"`).
+  A non-list `payments` is *not* reliably refused: `MandateGuard._read`
+  (`mandate.py:697-714`) refuses only when iterating `payments` raises, so `{}` and `""`
+  read as no payments (open finding, below). `load_signed` reads the mandate with
+  `parse_float=_refuse_float`, but the ledger is read with plain `json.load`
+  (`mandate.py:702`), so a float there is truncated, not refused.
 - **The swap hop refuses the shortcut it exists to refuse**: a swap pointed straight at
   the seller's `payTo`, an estimate for the wrong output currency, an estimate below the
   quote plus headroom, an order that comes back paying out elsewhere, asking for more
@@ -64,8 +73,8 @@ only where the Nano path passes through them, and nothing on them was changed or
 
 **The swap order is created without the network the estimate and the limits were
 checked on.** `NanswapProvider.estimate` and `limits` both send `fromNetwork` and
-`toNetwork` (`swap.py:600-604`, `:620-624`). `create_order` — the leg that spends —
-sends only `from`, `to`, `amount`, `fromAddress`, `toAddress` (`swap.py:639-645`). The
+`toNetwork` (`swap.py:599-605`, `:618-621`). `create_order` — the leg that spends —
+sends only `from`, `to`, `amount`, `fromAddress`, `toAddress` (`swap.py:640-644`). The
 plan carries `from_network` and it is not used in that body.
 
 USDC exists on many chains. The estimate and the provider's minimum/maximum are
@@ -104,10 +113,29 @@ Until then the exposure is bounded by `max_from_amount`, which the module alread
 "the only bound a swap hop has" — the loss is capped at one planned swap's input, not
 the wallet.
 
+**The ledger accepts a malformed `payments` and a float amount.** (MEDIUM.)
+`MandateGuard._read` (`mandate.py:697-714`) checks
+`sum(int(p["amount_raw"]) for p in data["payments"]) != spent` and refuses only if that
+raises or does not match. A ledger with `"spent_raw": "0", "payments": {}` or
+`"payments": ""` sums to 0 and is accepted, so `check()` and `status()` report it as a
+healthy ledger with nothing spent; `spend()` then fails on `.append` with an
+`AttributeError` rather than a `MandateRefused`. Because the ledger is read with plain
+`json.load` (`mandate.py:702`), an entry `"amount_raw": 1.9` with `"spent_raw": "1"` is
+also accepted: `int(1.9)` is `1`. Both were confirmed by calling `_read` on such files.
+The fix is to require `payments` to be a list and each `amount_raw` to be a digit string
+(or to read the ledger with `parse_float=_refuse_float`), refusing anything else as
+`ledger_corrupt`.
+
+**`NanoRail.pay()` without a mandate sends a float.** (MEDIUM.) The fail-closed refusal
+in `pay()` applies only when a guard is set (`rails.py:113`). Otherwise it calls the rpc
+with `{"action": "send", "amount_usd": quote.amount_usd}` (`rails.py:123`), a dollar
+float, so the integer-raw guarantees above hold only on the `pay_to` path and on the
+mandated path. A real rail behind this would have to convert a float to raw itself.
+
 ## Could not verify
 
 - No live network call on any rail. The Nano rails are simulated against the injected
   `rpc` stub by design; `api.nanswap.com` is denied from this container, so every
   provider reply exercised is the shipped transport stub.
-- The USDC, Skyfire, Payman and Nevermined legs were not audited — out of scope by
-  TIER0.md, and deliberately left alone.
+- The USDC, Skyfire, Payman and Nevermined legs were not audited — out of scope for
+  this pass, and deliberately left alone.
