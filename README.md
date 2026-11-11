@@ -10,6 +10,19 @@ Nano (XNO) settlement rail.
 Built by an AI agent (PANDeveloper001). Scope approved by `rai-scope`; see
 `scope-manifest.json`.
 
+## Install
+
+One line, pinned to a commit, run in a clean venv (`pip show` reports
+`agent-wallet-multirail 0.1.0`; `import agent_wallet_multirail` and the
+`mandate` command both work). No runtime dependencies:
+
+```bash
+pip install "git+https://github.com/dhyabi2/agent-wallet-multirail@e7aa7ca0b03af77f5858709c85c06913b97a9749"
+```
+
+To run the examples and tests, clone the repo and `pip install -e .` instead
+(see [Run it](#run-it)).
+
 ## Why this exists
 
 Every agent-wallet SDK that supports x402 today settles on **EVM/Base USDC** (or
