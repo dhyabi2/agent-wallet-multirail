@@ -9,7 +9,7 @@ description = "A runnable multi-rail agent-payment adapter: one PaymentRail inte
 readme = "README.md"
 requires-python = ">=3.9"
 license = "MIT"
-authors = [{ name = "PANDeveloper001" }]
+authors = [{ name = "dhyabi2" }]
 keywords = ["nano", "xno", "x402", "agent-wallet", "payments", "ai-agents"]
 classifiers = [
     "Intended Audience :: Developers",

@@ -74,7 +74,7 @@ quote = NanoQuote.from_x402_entry(seller_402["accepts"][0])   # payTo + exact ra
 
 plan = pay_nano_quote_from_usdc(                 # execute=False by default:
     quote, my_own_nano_account, NanswapProvider(api_key=KEY),
-    from_currency="USDC", from_network="BSC",
+    from_currency="USDC", from_network="BASE",   # the ticker sent is USDC-BASE
     from_amount="1", max_from_amount="2",        # the only bound on the spend
     order_key="invoice-7",                       # what makes a retry idempotent
 )                                                # ...so this spends nothing
@@ -132,22 +132,27 @@ decimal string. `float` is refused everywhere, in both directions.
 
 ### Two honest limits
 
-1. **No live call to a swap provider has been made.** The *requests*
-   `NanswapProvider` builds are checked against the URLs, query parameters and
-   header name of the published `nanswap` npm client 1.0.3 — the only shipped
-   client (the PyPI package of the same name is an empty sdist that installs no
-   module at all, and fails to build). The *responses* it parses are **not**
-   verified against the live API, which was unreachable from the environment
-   this was written in, so every field is validated and anything unrecognised is
-   refused rather than guessed at. The first person who can reach
-   `api.nanswap.com` should run one real quote and reconcile `_order_from`.
+1. **The quote half was run against the live API; the order half was not.**
+   On 2026-11-12 `limits` and `estimate` were run against `api.nanswap.com` for
+   `USDC` on `BASE` and `BSC`, and a real seller's 402 entry was planned end to
+   end with `execute=False`. That first contact found the provider refused every
+   real quote (Nanswap sends amounts as JSON numbers; urllib's default
+   User-Agent is answered 403). Both are fixed and the real replies are pinned
+   in `tests/test_swap.py` (`NanswapAsItAnsweredLive`). **Creating an order
+   needs a Nanswap API key (the API answers 401 without one) and none was
+   available, so no order has been created and no USDC has been swapped with
+   this code.** The order reply is parsed field by field, anything unrecognised
+   is refused, and an order that does not name the planned ticker
+   (`USDC-BASE`) back is refused as `order_network_unconfirmed` and never
+   funded. The first person with a key should create one small order and
+   reconcile `_order_from`.
 2. **A swap is custodial for the duration of the hop.** USDC leaves the agent's
    control and arrives as XNO only if the provider performs. Nothing here makes
    that leg trustless; `max_from_amount` is required, not optional.
 
-There is also no reverse estimate for Nanswap's partner (cross-chain) routes —
-it exists only for the native pairs — so there is no way to ask "what input
-yields exactly this output" for a USDC hop. That is why the planner takes an
+There is also no reverse estimate for a USDC route (`get-estimate-reverse`
+answers "from ticker invalid" for `USDC-BASE`), so there is no way to ask "what
+input yields exactly this output". That is why the planner takes an
 input amount and refuses one whose estimated output is short, rather than
 solving for the input: the guard runs in the direction the API offers.
 

@@ -23,15 +23,14 @@ re-implemented.
 
 Two honest limits, stated here because they bound what this module can promise:
 
-1.  **No live call to a swap provider was ever made from the environment this
-    was written in** -- ``api.nanswap.com`` answers 403 to CONNECT under the
-    network policy there. The *requests* ``NanswapProvider`` builds are checked
-    against the URLs, query parameters and header name in the published
-    ``nanswap`` npm client 1.0.3 (the only shipped client; the PyPI package of
-    the same name is an empty sdist that installs no module at all). The
-    *responses* it parses are **not** verified against the live API, so every
-    field is validated and anything unrecognised is **refused** rather than
-    guessed at: see ``_field``. A provider whose shape differs is a refusal to
+1.  **The quote half has met the live API; the order half has not.** On
+    2026-11-12 ``limits`` and ``estimate`` were run against ``api.nanswap.com``
+    and their real replies are pinned in the tests. Creating an order needs an
+    API key (401 without one) and none was available, so **no order has been
+    created with this code and the order reply's shape is unverified**: every
+    field is validated, anything unrecognised is **refused** rather than
+    guessed at (see ``_field``), and an order that does not name the planned
+    ticker back is never funded. A provider whose shape differs is a refusal to
     fix, never a payment made on a misread number.
 2.  **A swap is custodial for the duration of the hop.** USDC leaves the agent's
     control and arrives as XNO only if the provider performs. Nothing in this
@@ -41,10 +40,11 @@ Two honest limits, stated here because they bound what this module can promise:
 from __future__ import annotations
 
 import json
+import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
-from decimal import Decimal
+from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 from typing import Any, Callable, Dict, Mapping, Optional
 
 from .mandate import (
@@ -649,15 +649,81 @@ def plan_swap_hop(
 
 # -------------------------------------------------------------- the provider
 
-#: Base URL and paths as the published ``nanswap`` npm client 1.0.3 spells them.
-#: The "partner" endpoints are the cross-chain ones -- a USDC-on-BSC to XNO hop
-#: is a partner route, not the native XNO/BAN route the plain endpoints serve.
+#: Base URL, paths and header as the live API answered them on 2026-11-12, and
+#: as the published ``nanswap`` npm client 1.0.3 spells them.
+#:
+#: The plain endpoints are used, with a ticker that NAMES THE NETWORK
+#: (``USDC-BASE``, ``USDC-BSC``: the keys of ``/all-currencies``). The npm
+#: client also has "partner" endpoints, and their quote calls answer too -- but
+#: ``create-order-partner`` takes ``from: "USDC"`` and has no field for the
+#: network at all, so an order made there cannot say which chain its pay-in
+#: address is on, and USDC sent on the wrong chain is USDC lost. With the
+#: network inside the ticker, the order request itself carries it.
 NANSWAP_BASE = "https://api.nanswap.com/v1"
-NANSWAP_ESTIMATE_PARTNER = "/get-estimate-partner"
-NANSWAP_LIMITS_PARTNER = "/get-limits-partner"
-NANSWAP_CREATE_ORDER_PARTNER = "/create-order-partner"
-NANSWAP_GET_ORDER_PARTNER = "/get-order-partner"
+NANSWAP_ESTIMATE = "/get-estimate"
+NANSWAP_LIMITS = "/get-limits"
+NANSWAP_CREATE_ORDER = "/create-order"
+NANSWAP_GET_ORDER = "/get-order"
 NANSWAP_API_KEY_HEADER = "nanswap-api-key"
+#: Cloudflare in front of the API answers 403 to urllib's default User-Agent
+#: (measured 2026-11-12); any named client is let through.
+NANSWAP_USER_AGENT = "agent-wallet-multirail (+https://github.com/dhyabi2/agent-wallet-multirail)"
+
+
+def nanswap_ticker(currency: str, network: str) -> str:
+    """``("USDC", "BASE")`` -> ``"USDC-BASE"``: the ticker that names the chain.
+
+    A network is required. ``USDC`` alone is not a currency the plain endpoints
+    know, and guessing a chain for someone's money is the one thing this must
+    never do.
+    """
+    cur = (currency or "").strip().upper() if isinstance(currency, str) else ""
+    net = (network or "").strip().upper() if isinstance(network, str) else ""
+    if not cur or not net or "-" in cur or not cur.isalnum() or not net.isalnum():
+        raise SwapRefused(
+            "invalid_swap_pair",
+            "a Nanswap hop needs a currency and the network it is on, such as "
+            "from_currency='USDC', from_network='BASE' (got %r, %r)" % (currency, network))
+    return "%s-%s" % (cur, net)
+
+
+def _provider_error(payload, where: str) -> None:
+    """Raise the provider's own words when it answered with an error body.
+
+    Nanswap answers HTTP 200 with ``{"error": true, "message": "Not available"}``
+    for an amount under its minimum and ``{"error": "..."}`` elsewhere. Without
+    this the caller is told a field is missing, which is true and useless.
+    """
+    if isinstance(payload, Mapping) and payload.get("error"):
+        said = payload.get("message")
+        if not isinstance(said, str) or not said.strip():
+            said = payload.get("error")
+        raise SwapRefused("provider_refused",
+                          "%s: the provider answered %r" % (where, said))
+
+
+def _usdc_text(value, where: str, field_name: str, round_up: bool) -> str:
+    """A provider's USDC limit as a 6-decimal string.
+
+    Nanswap publishes limits with more digits than USDC has
+    (``3280.1762548040915``). A minimum is rounded UP and a maximum DOWN, so the
+    rounded limit is never looser than the provider's own.
+    """
+    if isinstance(value, bool):
+        raise SwapRefused("provider_response_unrecognised",
+                          "%s: %r is a boolean, not an amount" % (where, field_name))
+    text = str(value) if isinstance(value, int) else _exact_decimal(value, where, field_name)
+    try:
+        number = Decimal(text)
+    except Exception as exc:  # noqa: BLE001 - InvalidOperation and friends
+        raise SwapRefused("provider_response_unrecognised",
+                          "%s: %r is not a decimal amount (%r)"
+                          % (where, field_name, text)) from exc
+    if not number.is_finite() or number < 0:
+        raise SwapRefused("provider_response_unrecognised",
+                          "%s: %r is not a usable amount (%r)" % (where, field_name, text))
+    step = Decimal("0.000001")
+    return format(number.quantize(step, rounding=ROUND_CEILING if round_up else ROUND_FLOOR), "f")
 
 
 def _field(payload: Mapping[str, Any], name: str, kinds, where: str):
@@ -703,11 +769,14 @@ def _exact_decimal(value, where: str, field_name: str) -> str:
 
 
 class NanswapProvider:
-    """Requests for Nanswap's partner (cross-chain) endpoints.
+    """Requests for Nanswap's swap endpoints, network named in the ticker.
 
-    The URLs, query parameter names, POST body keys and the API-key header are
-    the ones in the published ``nanswap`` npm client 1.0.3 -- read off its
-    source, not guessed. ``transport`` is the one seam: it takes
+    The quote and limits calls were run against the live API on 2026-11-12 and
+    their real answers are pinned in the tests. Creating an order needs an API
+    key (the API answers 401 without one), and none was available, so **the
+    order reply's shape is still unverified**: it is parsed field by field,
+    anything unrecognised is refused, and an order that does not name the
+    planned ticker back is refused too. ``transport`` is the one seam: it takes
     ``(method, url, headers, body)`` and returns the decoded JSON, so the tests
     and the shipped example run with no network and no key.
 
@@ -733,13 +802,37 @@ class NanswapProvider:
             data = json.dumps(body).encode("utf-8")
             headers = dict(headers)
             headers["Content-Type"] = "application/json"
-        request = urllib.request.Request(url, data=data, headers=dict(headers), method=method)
-        with urllib.request.urlopen(request, timeout=self._timeout) as response:
-            return json.loads(response.read().decode("utf-8"))
+        headers = dict(headers)
+        headers.setdefault("User-Agent", NANSWAP_USER_AGENT)
+        headers.setdefault("Accept", "application/json")
+        request = urllib.request.Request(url, data=data, headers=headers, method=method)
+        try:
+            with urllib.request.urlopen(request, timeout=self._timeout) as response:
+                text = response.read().decode("utf-8")
+        except urllib.error.HTTPError as exc:
+            # The API puts its reason in the body of a 4xx ({"error": "..."}).
+            text = exc.read().decode("utf-8", "replace")
+            try:
+                _provider_error(json.loads(text), "HTTP %s" % exc.code)
+            except ValueError:
+                pass
+            raise SwapRefused("provider_refused",
+                              "the provider answered HTTP %s: %s" % (exc.code, text[:200])) from exc
+        # Nanswap sends amounts as JSON numbers (15.458333333333334). Each one
+        # is kept as the exact text that was on the wire, never as a float:
+        # that is the only place a number becomes a string, so a transport that
+        # hands this class a float is still refused further down.
+        try:
+            return json.loads(text, parse_float=str)
+        except ValueError as exc:
+            raise SwapRefused("provider_response_unrecognised",
+                              "the provider's reply is not JSON: %r" % text[:120]) from exc
 
     def _get(self, path: str, params: Dict[str, str]):
         url = "%s%s?%s" % (self._base, path, urllib.parse.urlencode(params))
-        return self._transport("GET", url, {}, None)
+        payload = self._transport("GET", url, {}, None)
+        _provider_error(payload, path)
+        return payload
 
     def _post(self, path: str, body: Dict[str, Any]):
         if not self._api_key:
@@ -748,7 +841,9 @@ class NanswapProvider:
                               "one can quote but cannot create an order"
                               % (path, NANSWAP_API_KEY_HEADER))
         url = "%s%s" % (self._base, path)
-        return self._transport("POST", url, {NANSWAP_API_KEY_HEADER: self._api_key}, body)
+        payload = self._transport("POST", url, {NANSWAP_API_KEY_HEADER: self._api_key}, body)
+        _provider_error(payload, path)
+        return payload
 
     # -- read path ---------------------------------------------------------
 
@@ -756,24 +851,23 @@ class NanswapProvider:
                  to_currency: str = "XNO", to_network: str = "") -> SwapEstimate:
         """Forward estimate: this much in, how much XNO out.
 
-        Nanswap publishes ``get-estimate-reverse`` for its native pairs but
-        **no reverse estimate for the partner (cross-chain) routes** -- it is
-        absent from the npm client and so from the documented surface. There is
-        therefore no way to ask "what input yields exactly this output" for a
-        USDC hop. That is why ``plan_swap_hop`` takes an input amount and
-        refuses one whose estimated output is short, rather than solving for the
-        input: the direction the API offers is the direction the guard runs in.
+        There is no reverse estimate for a USDC route (``get-estimate-reverse``
+        answers "from ticker invalid" for ``USDC-BASE``, measured 2026-11-12),
+        so there is no way to ask "what input yields exactly this output".
+        That is why ``plan_swap_hop`` takes an input amount and refuses one
+        whose estimated output is short, rather than solving for the input:
+        the direction the API offers is the direction the guard runs in.
         """
-        payload = self._get(NANSWAP_ESTIMATE_PARTNER, {
-            "from": from_currency,
+        ticker = nanswap_ticker(from_currency, from_network)
+        where = "estimate %s->%s" % (ticker, to_currency)
+        payload = self._get(NANSWAP_ESTIMATE, {
+            "from": ticker,
             "to": to_currency,
             "amount": micro_to_usdc(from_amount_micro),
-            "fromNetwork": from_network,
-            "toNetwork": to_network,
         })
-        where = "estimate %s(%s)->%s" % (from_currency, from_network, to_currency)
-        amount = _exact_decimal(_field(payload, "amountTo", (str, int, float), where),
-                                where, "amountTo")
+        amount = _field(payload, "amountTo", (str, int, float), where)
+        amount = str(amount) if isinstance(amount, int) and not isinstance(amount, bool) \
+            else _exact_decimal(amount, where, "amountTo")
         return SwapEstimate(
             from_currency=from_currency, from_network=from_network,
             to_currency=to_currency, to_network=to_network,
@@ -782,37 +876,45 @@ class NanswapProvider:
 
     def limits(self, *, from_currency: str, from_network: str,
                to_currency: str = "XNO", to_network: str = "") -> SwapLimits:
-        payload = self._get(NANSWAP_LIMITS_PARTNER, {
-            "from": from_currency,
-            "to": to_currency,
-            "fromNetwork": from_network,
-            "toNetwork": to_network,
-        })
-        where = "limits %s(%s)->%s" % (from_currency, from_network, to_currency)
-        minimum = _exact_decimal(_field(payload, "min", (str, int, float), where), where, "min")
-        limits_min = usdc_to_micro(minimum)
+        ticker = nanswap_ticker(from_currency, from_network)
+        where = "limits %s->%s" % (ticker, to_currency)
+        payload = self._get(NANSWAP_LIMITS, {"from": ticker, "to": to_currency})
+        minimum = _usdc_text(_field(payload, "min", (str, int, float), where),
+                             where, "min", round_up=True)
+        limits_min = usdc_to_micro(minimum) if Decimal(minimum) > 0 else 0
         limits_max = None
         if payload.get("max") is not None:
-            limits_max = usdc_to_micro(_exact_decimal(payload["max"], where, "max"))
+            limits_max = usdc_to_micro(_usdc_text(payload["max"], where, "max", round_up=False))
         return SwapLimits(min_from_micro=limits_min, max_from_micro=limits_max)
 
     def order(self, order_id: str) -> SwapOrder:
-        payload = self._get(NANSWAP_GET_ORDER_PARTNER, {"id": order_id})
+        payload = self._get(NANSWAP_GET_ORDER, {"id": order_id})
         return self._order_from(payload, "order %s" % order_id)
 
     # -- spend path --------------------------------------------------------
 
     def create_order(self, plan: SwapPlan) -> SwapOrder:
         """Create the swap order. **This is the leg that spends.**"""
-        payload = self._post(NANSWAP_CREATE_ORDER_PARTNER, {
-            "from": plan.from_currency,
+        ticker = nanswap_ticker(plan.from_currency, plan.from_network)
+        payload = self._post(NANSWAP_CREATE_ORDER, {
+            "from": ticker,
             "to": "XNO",
             "amount": plan.from_amount,
-            "fromAddress": "",
             "toAddress": plan.own_address,
         })
         try:
             order = self._order_from(payload, "create-order %s" % plan.order_key)
+            # The pay-in address is only safe to fund on the chain the plan
+            # named. An order that does not say which ticker it is for cannot
+            # be told apart from one on another chain, so it is refused: USDC
+            # sent to the right address on the wrong chain does not come back.
+            named = payload.get("from")
+            if not isinstance(named, str) or named.strip().upper() != ticker:
+                raise SwapRefused(
+                    "order_network_unconfirmed",
+                    "the order does not name %s as what it expects to be paid in (its 'from' "
+                    "is %r). Do not fund it: nothing in the reply says which chain the "
+                    "pay-in address is on" % (ticker, named))
         except SwapRefused as exc:
             # The POST went through, so an order may exist even though its
             # reply cannot be read. Attach what is known so the hop records it
