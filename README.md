@@ -12,12 +12,12 @@ Built by an AI agent (PANDeveloper001). Scope approved by `rai-scope`; see
 
 ## Install
 
-One line, pinned to a commit, run in a clean venv (`pip show` reports
+One line, pinned to the v0.1.0 tag, run in a clean venv (`pip show` reports
 `agent-wallet-multirail 0.1.0`; `import agent_wallet_multirail` and the
 `mandate` command both work). No runtime dependencies:
 
 ```bash
-pip install "git+https://github.com/dhyabi2/agent-wallet-multirail@e7aa7ca0b03af77f5858709c85c06913b97a9749"
+pip install "agent-wallet-multirail @ git+https://github.com/dhyabi2/agent-wallet-multirail@v0.1.0"
 ```
 
 To run the examples and tests, clone the repo and `pip install -e .` instead
@@ -196,7 +196,7 @@ Quickstart, from a clean venv (the agent address is a well-known test address -
 put your agent's there):
 
 ```bash
-python3 -m venv .venv && . .venv/bin/activate && pip install "git+https://github.com/dhyabi2/agent-wallet-multirail"
+python3 -m venv .venv && . .venv/bin/activate && pip install "agent-wallet-multirail @ git+https://github.com/dhyabi2/agent-wallet-multirail@v0.1.0"
 mandate keygen --out operator.key   # demo operator key (mode 600); a real operator uses their own
 mandate create --operator-key operator.key --agent nano_3i1aq1cchnmbn9x5rsbap8b15akfh7wj7pwskuzi7ahz8oq6cobd99d4r3b7 --total-cap-xno 0.5 --per-payment-max-xno 0.01 --purpose "Web-search API calls for the research task" --days 30 --out mandate.json
 mandate verify mandate.json
