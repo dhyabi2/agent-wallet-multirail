@@ -44,7 +44,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
-from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
+from decimal import ROUND_CEILING, ROUND_FLOOR, Context, Decimal
 from typing import Any, Callable, Dict, Mapping, Optional
 
 from .mandate import (
@@ -719,11 +719,17 @@ def _usdc_text(value, where: str, field_name: str, round_up: bool) -> str:
         raise SwapRefused("provider_response_unrecognised",
                           "%s: %r is not a decimal amount (%r)"
                           % (where, field_name, text)) from exc
-    if not number.is_finite() or number < 0:
+    if not number.is_finite() or number < 0 or number.adjusted() > 30 \
+            or -number.as_tuple().exponent > 60:
         raise SwapRefused("provider_response_unrecognised",
                           "%s: %r is not a usable amount (%r)" % (where, field_name, text))
-    step = Decimal("0.000001")
-    return format(number.quantize(step, rounding=ROUND_CEILING if round_up else ROUND_FLOOR), "f")
+    # Decimal's default context keeps 28 digits; quantize raises past that and
+    # multiply rounds silently. A context wide enough for anything accepted
+    # above keeps every digit.
+    exact = Context(prec=120)
+    micro = exact.multiply(number, Decimal(MICRO_PER_USDC)).to_integral_value(
+        rounding=ROUND_CEILING if round_up else ROUND_FLOOR, context=exact)
+    return micro_to_usdc(int(micro)) if micro > 0 else "0"
 
 
 def _field(payload: Mapping[str, Any], name: str, kinds, where: str):

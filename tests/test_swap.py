@@ -1633,3 +1633,13 @@ class NanswapAsItAnsweredLive(unittest.TestCase):
                 pay_nano_quote_from_usdc(a_quote(), AGENT, provider, **kwargs)
             self.assertEqual(caught.exception.reason, "order_network_unconfirmed")
         self.assertEqual(calls.count("POST"), 1)
+
+    def test_a_limit_with_more_digits_than_a_decimal_context_holds_is_still_exact(self):
+        long_max = "3277.449183" + "9" * 40
+        provider = NanswapProvider(transport=lambda *a: {"min": "0.000000" + "0" * 30 + "1", "max": long_max})
+        limits = provider.limits(from_currency="USDC", from_network="BASE")
+        self.assertEqual((limits.min_from_micro, limits.max_from_micro), (1, 3277449183))
+        for absurd in ("1e999", "9" * 80, "NaN", "-1"):
+            with self.assertRaises(SwapRefused):
+                NanswapProvider(transport=lambda *a, v=absurd: {"min": v}).limits(
+                    from_currency="USDC", from_network="BASE")
