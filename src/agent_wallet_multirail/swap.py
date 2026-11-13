@@ -39,6 +39,7 @@ Two honest limits, stated here because they bound what this module can promise:
 """
 from __future__ import annotations
 
+import http.client
 import json
 import urllib.error
 import urllib.parse
@@ -108,7 +109,15 @@ class SwapRefused(Exception):
     ``create_order``, so that refusal does not claim nothing was funded; it
     says the order was not accepted and was recorded under the order_key, so
     a retry never creates a second one.
+
+    ``ambiguous`` is True on a refusal raised by ``NanswapProvider``'s HTTP
+    layer when the request may have reached the provider and been acted on
+    (a 5xx, a timeout or dropped connection, a 2xx reply that cannot be
+    read). A create-order POST failing that way is recorded as
+    ``order_unconfirmed`` rather than left retryable.
     """
+
+    ambiguous = False
 
     def __init__(self, reason: str, message: str = ""):
         self.reason = reason
@@ -735,10 +744,10 @@ def _usdc_text(value, where: str, field_name: str, round_up: bool) -> str:
 def _field(payload: Mapping[str, Any], name: str, kinds, where: str):
     """One field of a provider response, or a refusal naming what was wrong.
 
-    No field is defaulted and no type is coerced. The live API was unreachable
-    from the environment this was written in, so an unrecognised shape is a
-    refusal to be fixed by someone who can see a real response -- never a
-    payment made on a misread number.
+    No field is defaulted and no type is coerced. Only the quote and limits
+    replies have been seen live (2026-11-12); the order reply has not, so an
+    unrecognised shape is a refusal to be fixed by someone who can see a real
+    response -- never a payment made on a misread number.
     """
     if not isinstance(payload, Mapping):
         raise SwapRefused("provider_response_unrecognised",
@@ -772,6 +781,29 @@ def _exact_decimal(value, where: str, field_name: str) -> str:
         "number type is a float here, which cannot hold 30 decimals, so the value is already "
         "lossy by the time it is read"
         % (where, field_name, type(value).__name__))
+
+
+def _amount_text(value, where: str, field_name: str) -> str:
+    """A provider amount that may be a JSON integer, as exact decimal text.
+
+    ``_http`` keeps a JSON float as its wire text but a JSON integer stays an
+    ``int``, and an integer is exact, so a whole-number amount (``2``) is read
+    as its digits. A ``bool`` is refused: it is an ``int`` to Python and never
+    an amount.
+    """
+    if isinstance(value, bool):
+        raise SwapRefused("provider_response_unrecognised",
+                          "%s: %r is a boolean, not an amount" % (where, field_name))
+    if isinstance(value, int):
+        return str(value)
+    return _exact_decimal(value, where, field_name)
+
+
+def _ambiguous_refusal(reason: str, message: str) -> SwapRefused:
+    """A refusal for a request that may have reached the provider and been acted on."""
+    refused = SwapRefused(reason, message)
+    refused.ambiguous = True
+    return refused
 
 
 class NanswapProvider:
@@ -812,18 +844,49 @@ class NanswapProvider:
         headers.setdefault("User-Agent", NANSWAP_USER_AGENT)
         headers.setdefault("Accept", "application/json")
         request = urllib.request.Request(url, data=data, headers=headers, method=method)
+        # Every failure below is a SwapRefused. Only a 4xx is a clean "no":
+        # the provider read the request and turned it down. A 5xx, a timeout,
+        # a dropped connection or a 2xx reply that cannot be read all leave
+        # open whether the provider acted on the request, so they are marked
+        # ``ambiguous`` -- for a create-order POST that means an order may
+        # exist, and ``create_order`` records it rather than letting a retry
+        # POST a second one.
         try:
             with urllib.request.urlopen(request, timeout=self._timeout) as response:
-                text = response.read().decode("utf-8")
+                body_bytes = response.read()
         except urllib.error.HTTPError as exc:
             # The API puts its reason in the body of a 4xx ({"error": "..."}).
-            text = exc.read().decode("utf-8", "replace")
+            ambiguous = exc.code >= 500
             try:
-                _provider_error(json.loads(text), "HTTP %s" % exc.code)
+                text = exc.read().decode("utf-8", "replace")
+            except Exception:  # noqa: BLE001 - the error body is best effort
+                text = ""
+            try:
+                said = json.loads(text)
             except ValueError:
-                pass
-            raise SwapRefused("provider_refused",
-                              "the provider answered HTTP %s: %s" % (exc.code, text[:200])) from exc
+                said = None
+            try:
+                _provider_error(said, "HTTP %s" % exc.code)
+            except SwapRefused as refused:
+                refused.ambiguous = ambiguous
+                raise refused from exc
+            refused = SwapRefused("provider_refused",
+                                  "the provider answered HTTP %s: %s" % (exc.code, text[:200]))
+            refused.ambiguous = ambiguous
+            raise refused from exc
+        except (OSError, http.client.HTTPException) as exc:
+            # URLError, timeouts, resets, a reply cut short: the request may
+            # have been sent and acted on before the connection failed.
+            raise _ambiguous_refusal(
+                "provider_unreachable",
+                "the request to the provider failed before a reply was read (%s: %s)"
+                % (type(exc).__name__, exc)) from exc
+        try:
+            text = body_bytes.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise _ambiguous_refusal(
+                "provider_response_unrecognised",
+                "the provider's reply is not UTF-8 text: %r" % body_bytes[:120]) from exc
         # Nanswap sends amounts as JSON numbers (15.458333333333334). Each one
         # is kept as the exact text that was on the wire, never as a float:
         # that is the only place a number becomes a string, so a transport that
@@ -831,8 +894,8 @@ class NanswapProvider:
         try:
             return json.loads(text, parse_float=str)
         except ValueError as exc:
-            raise SwapRefused("provider_response_unrecognised",
-                              "the provider's reply is not JSON: %r" % text[:120]) from exc
+            raise _ambiguous_refusal("provider_response_unrecognised",
+                                     "the provider's reply is not JSON: %r" % text[:120]) from exc
 
     def _get(self, path: str, params: Dict[str, str]):
         url = "%s%s?%s" % (self._base, path, urllib.parse.urlencode(params))
@@ -872,8 +935,7 @@ class NanswapProvider:
             "amount": micro_to_usdc(from_amount_micro),
         })
         amount = _field(payload, "amountTo", (str, int, float), where)
-        amount = str(amount) if isinstance(amount, int) and not isinstance(amount, bool) \
-            else _exact_decimal(amount, where, "amountTo")
+        amount = _amount_text(amount, where, "amountTo")
         return SwapEstimate(
             from_currency=from_currency, from_network=from_network,
             to_currency=to_currency, to_network=to_network,
@@ -902,12 +964,23 @@ class NanswapProvider:
     def create_order(self, plan: SwapPlan) -> SwapOrder:
         """Create the swap order. **This is the leg that spends.**"""
         ticker = nanswap_ticker(plan.from_currency, plan.from_network)
-        payload = self._post(NANSWAP_CREATE_ORDER, {
-            "from": ticker,
-            "to": "XNO",
-            "amount": plan.from_amount,
-            "toAddress": plan.own_address,
-        })
+        try:
+            payload = self._post(NANSWAP_CREATE_ORDER, {
+                "from": ticker,
+                "to": "XNO",
+                "amount": plan.from_amount,
+                "toAddress": plan.own_address,
+            })
+        except SwapRefused as exc:
+            # A clean refusal (no key, a 4xx, an error body) created nothing
+            # and stays retryable. An ambiguous one may have created an order.
+            if not exc.ambiguous:
+                raise
+            raise self._unconfirmed(plan, exc.message) from exc
+        except Exception as exc:  # noqa: BLE001 - a custom transport can raise anything
+            # A transport other than ``_http`` failing mid-request cannot be
+            # told apart from one that failed after the order was made.
+            raise self._unconfirmed(plan, "%s: %s" % (type(exc).__name__, exc)) from exc
         try:
             order = self._order_from(payload, "create-order %s" % plan.order_key)
             # The pay-in address is only safe to fund on the chain the plan
@@ -940,14 +1013,33 @@ class NanswapProvider:
             exc.order = order
             raise
 
+    @staticmethod
+    def _unconfirmed(plan: SwapPlan, what: str) -> SwapRefused:
+        """The refusal for a create-order POST whose outcome is unknown.
+
+        It carries an ``order`` with no id, so ``pay_nano_quote_from_usdc``
+        records it under the order_key and a retry under that key raises this
+        again instead of POSTing a second order.
+        """
+        refused = SwapRefused(
+            "order_unconfirmed",
+            "create-order for order_key %r failed after the request may have reached the "
+            "provider (%s). An order may exist at Nanswap with no reply to show for it: look "
+            "it up with the provider (its order history for %s %s to %s) before creating "
+            "another" % (plan.order_key, what, plan.from_amount, plan.from_currency,
+                         plan.own_address))
+        refused.order = {"order_id": None, "pay_in_address": None, "raw": None,
+                         "unconfirmed": True}
+        return refused
+
     def _order_from(self, payload, where: str) -> SwapOrder:
         order_id = _field(payload, "id", str, where)
         pay_in = _field(payload, "payinAddress", str, where)
         to_address = _field(payload, "payoutAddress", str, where)
-        expected = _exact_decimal(_field(payload, "expectedAmountTo", (str, int, float), where),
-                                  where, "expectedAmountTo")
-        from_amount = _exact_decimal(_field(payload, "expectedAmountFrom", (str, int, float), where),
-                                     where, "expectedAmountFrom")
+        expected = _amount_text(_field(payload, "expectedAmountTo", (str, int, float), where),
+                                where, "expectedAmountTo")
+        from_amount = _amount_text(_field(payload, "expectedAmountFrom", (str, int, float), where),
+                                   where, "expectedAmountFrom")
         return SwapOrder(
             order_id=order_id, pay_in_address=pay_in,
             from_amount_micro=usdc_to_micro(from_amount),
@@ -1197,7 +1289,7 @@ def _record_refused_order(order_log: Dict[str, Any], key: str, plan: SwapPlan, o
         "%s. The order (%s) was not accepted and was recorded under order_key %r; a retry "
         "under that key raises this refusal again and creates no second order. If the "
         "provider funds orders when they are created, settle it with the provider"
-        % (exc.message, _order_id(order), key))
+        % (exc.message, _order_id(order) or "id unknown", key))
     order_log[key] = {
         "plan": plan,
         "order": order,

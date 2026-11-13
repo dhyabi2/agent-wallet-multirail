@@ -1643,3 +1643,171 @@ class NanswapAsItAnsweredLive(unittest.TestCase):
             with self.assertRaises(SwapRefused):
                 NanswapProvider(transport=lambda *a, v=absurd: {"min": v}).limits(
                     from_currency="USDC", from_network="BASE")
+
+
+def _served_by(test, answer):
+    """Patch urlopen so the real ``_http`` runs and no socket is opened.
+
+    ``answer(request)`` returns reply bytes or raises; every request is kept
+    on ``test.requests``.
+    """
+    from unittest import mock
+    test.requests = []
+
+    def urlopen(request, timeout=None):
+        test.requests.append(request)
+        body = answer(request)
+        reply = mock.MagicMock()
+        reply.__enter__.return_value.read.return_value = body
+        return reply
+    patcher = mock.patch("urllib.request.urlopen", urlopen)
+    patcher.start()
+    test.addCleanup(patcher.stop)
+    return NanswapProvider(api_key="KEY")
+
+
+_ORDER_WIRE = (b'{"id":"ord-int","from":"USDC-BSC","payinAddress":"0xabc","payoutAddress":"'
+               + mandate.normalise_address(AGENT).encode("ascii")
+               + b'","expectedAmountTo":2,"expectedAmountFrom":2}')
+
+
+class WholeNumberOrderAmounts(unittest.TestCase):
+    """A JSON integer is exact; an order reply carrying one is read, not refused."""
+
+    def test_integer_order_amounts_on_the_wire_are_read(self):
+        provider = _served_by(self, lambda request: _ORDER_WIRE)
+        order = provider.create_order(a_plan())
+        self.assertEqual(order.order_id, "ord-int")
+        self.assertEqual(order.from_amount_micro, 2 * MICRO_PER_USDC)
+        self.assertEqual(order.expected_to_amount, "2")
+
+    def test_integer_order_amounts_from_a_transport_are_read(self):
+        reply = {"id": "ord-int", "from": "USDC-BSC", "payinAddress": "0xabc",
+                 "payoutAddress": mandate.normalise_address(AGENT),
+                 "expectedAmountTo": 2, "expectedAmountFrom": 2}
+        provider = NanswapProvider(api_key="KEY", transport=lambda *a: reply)
+        order = provider.create_order(a_plan())
+        self.assertEqual((order.from_amount_micro, order.expected_to_amount),
+                         (2 * MICRO_PER_USDC, "2"))
+        self.assertEqual(provider.order("ord-int").expected_to_amount, "2")
+
+    def test_a_boolean_order_amount_is_still_refused(self):
+        for name in ("expectedAmountTo", "expectedAmountFrom"):
+            reply = {"id": "ord-int", "from": "USDC-BSC", "payinAddress": "0xabc",
+                     "payoutAddress": mandate.normalise_address(AGENT),
+                     "expectedAmountTo": 2, "expectedAmountFrom": 2}
+            reply[name] = True
+            provider = NanswapProvider(api_key="KEY", transport=lambda *a, r=reply: r)
+            with self.assertRaises(SwapRefused) as caught:
+                provider.create_order(a_plan())
+            self.assertEqual(caught.exception.reason, "provider_response_unrecognised", name)
+
+
+class AnAmbiguousCreateOrderIsNeverPostedTwice(unittest.TestCase):
+    """A create-order POST that may have reached the provider is recorded.
+
+    A 5xx, a timeout or a dropped connection can come after the origin made
+    the order, so the order_key is spent: a retry reports the order as
+    unconfirmed and POSTs nothing. A 4xx is a clean refusal and stays retryable.
+    """
+
+    def failing_post(self, fail):
+        def answer(request):
+            if request.get_method() == "POST":
+                fail(request)
+            if "get-limits" in request.full_url:
+                return b'{"min":1,"max":100}'
+            return b'{"amountTo":"1.5"}'
+        return _served_by(self, answer)
+
+    def posts(self):
+        return [r for r in self.requests if r.get_method() == "POST"]
+
+    def assert_posted_once_and_recorded(self, provider):
+        log = {}
+        for _ in range(2):
+            with self.assertRaises(SwapRefused) as caught:
+                _hop(provider, log)
+            self.assertEqual(caught.exception.reason, "order_unconfirmed")
+        self.assertEqual(len(self.posts()), 1)
+        self.assertEqual(log["k1"]["refused"]["reason"], "order_unconfirmed")
+        self.assertIn("look it up with the provider", str(caught.exception))
+
+    def test_a_5xx_then_a_retry_posts_exactly_once(self):
+        import io
+        import urllib.error
+
+        def fail(request):
+            raise urllib.error.HTTPError(request.full_url, 502, "Bad Gateway", {},
+                                         io.BytesIO(b"upstream timed out"))
+        self.assert_posted_once_and_recorded(self.failing_post(fail))
+
+    def test_a_5xx_with_an_error_body_is_still_unconfirmed(self):
+        import io
+        import urllib.error
+
+        def fail(request):
+            raise urllib.error.HTTPError(request.full_url, 500, "x", {},
+                                         io.BytesIO(b'{"error":"internal"}'))
+        self.assert_posted_once_and_recorded(self.failing_post(fail))
+
+    def test_a_timeout_then_a_retry_posts_exactly_once(self):
+        import socket
+
+        def fail(request):
+            raise socket.timeout("timed out")
+        self.assert_posted_once_and_recorded(self.failing_post(fail))
+
+    def test_a_dropped_connection_then_a_retry_posts_exactly_once(self):
+        import http.client
+
+        def fail(request):
+            raise http.client.RemoteDisconnected("Remote end closed connection without response")
+        self.assert_posted_once_and_recorded(self.failing_post(fail))
+
+    def test_an_unreadable_2xx_reply_then_a_retry_posts_exactly_once(self):
+        provider = _served_by(self, lambda request: (
+            b"<html>ok</html>" if request.get_method() == "POST"
+            else b'{"min":1,"amountTo":"1.5"}'))
+        self.assert_posted_once_and_recorded(provider)
+
+    def test_a_custom_transport_failing_mid_post_posts_exactly_once(self):
+        posts = []
+
+        def transport(method, url, headers, body):
+            if method == "POST":
+                posts.append(url)
+                raise TimeoutError("read timed out")
+            return {"min": "1", "amountTo": "1.5"}
+        provider, log = NanswapProvider(api_key="KEY", transport=transport), {}
+        for _ in range(2):
+            with self.assertRaises(SwapRefused) as caught:
+                _hop(provider, log)
+            self.assertEqual(caught.exception.reason, "order_unconfirmed")
+        self.assertEqual(len(posts), 1)
+
+    def test_a_4xx_refusal_stays_retryable(self):
+        import io
+        import urllib.error
+
+        def fail(request):
+            raise urllib.error.HTTPError(request.full_url, 400, "x", {},
+                                         io.BytesIO(b'{"error":"amount too low"}'))
+        provider, log = self.failing_post(fail), {}
+        for _ in range(2):
+            with self.assertRaises(SwapRefused) as caught:
+                _hop(provider, log)
+            self.assertEqual(caught.exception.reason, "provider_refused")
+            self.assertIn("amount too low", str(caught.exception))
+        self.assertEqual(log, {})
+        self.assertEqual(len(self.posts()), 2)
+
+
+class ANonUtf8ReplyIsTheModulesOwnRefusal(unittest.TestCase):
+    def test_a_non_utf8_body_is_a_swap_refusal_not_a_unicode_error(self):
+        provider = _served_by(self, lambda request: b'{"amountTo":"1.5\xff"}')
+        with self.assertRaises(SwapRefused) as caught:
+            provider.estimate(from_currency="USDC", from_network="BASE",
+                              from_amount_micro=MICRO_PER_USDC)
+        self.assertEqual(caught.exception.reason, "provider_response_unrecognised")
+        self.assertIn("UTF-8", str(caught.exception))
