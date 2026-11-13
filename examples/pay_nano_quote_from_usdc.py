@@ -56,9 +56,9 @@ def main(argv):
     print("seller wants %s raw (%s XNO) at %s" % (quote.amount_raw, quote.amount_xno, quote.pay_to))
 
     provider = NanswapProvider(api_key="demo-key", transport=stub_transport([
-        {"min": "0.5", "max": "1000"},            # get-limits-partner
-        {"amountTo": "0.000105"},                 # get-estimate-partner
-        {"id": "ord-demo", "payinAddress": "0xTheProviderPaysInHere",
+        {"min": "0.5", "max": "1000"},            # get-limits
+        {"amountTo": "0.000105"},                 # get-estimate
+        {"id": "ord-demo", "from": "USDC-BSC", "payinAddress": "0xTheProviderPaysInHere",
          "payoutAddress": AGENT_ACCOUNT,
          "expectedAmountTo": "0.000105", "expectedAmountFrom": "1"},
     ]))
