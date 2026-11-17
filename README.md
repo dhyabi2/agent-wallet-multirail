@@ -109,11 +109,16 @@ python3 examples/pay_nano_quote_from_usdc.py refuse   # the shortcut, refused (e
 | `estimate_below_quote` | a swap whose estimated output is under the quote **plus headroom** — spending the USDC on it leaves the payment unmakeable and the USDC gone |
 | `swap_not_received_yet` | sending before the XNO has actually arrived; a one-raw shortfall sends nothing |
 | `exceeds_cap` | more USDC leaving than `max_from_amount`; a swap is custodial for the duration, and this cap is the only real bound |
-| `no_order_log` / `order_key_reused` | buying the swap twice — a retry after a crash reads the recorded order back instead of creating a second |
+| `no_order_log` / `order_key_reused` | buying the swap twice — a retry after a crash reads the recorded order back instead of creating a second. The key is recorded as pending *before* the create-order request is sent, and executing calls on one key are serialised within a process, so neither a crash mid-request nor two threads on one key can create two orders |
 | `order_destination_changed` | an order that came back paying out somewhere other than the account it was created for, or to a string that is not a Nano account at all |
 | `order_terms_changed` | an order that asks for more input than the hop was planned on, or commits to less XNO than the quote. Checked on any provider's order (a `SwapOrder`, any object with its attributes, or a mapping with its keys), and again on read-back from `order_log`. A refused order (or one whose reply cannot be read after `create_order` sent it) is still recorded under the `order_key`, marked refused, because `create_order` may be the call that funds: a retry under that key raises the same refusal and never creates a second order. The provider's own order object is what is recorded and returned |
-| `provider_amount_not_a_string` | an XNO amount that arrived as a JSON number, or an order's expected output given as a `float`: a float cannot hold 30 decimals, so it is already lossy. An order's expected output may be an exact decimal XNO string or a finite `Decimal`; a plain `int` is refused as `provider_response_unrecognised`, because a bare int amount is the smallest unit everywhere else in this package |
+| `provider_amount_not_a_string` | an XNO amount that arrived as a JSON number, or an order's expected output given as a `float`: a float cannot hold 30 decimals, so it is already lossy. An order's expected output may be an exact decimal XNO string or a finite `Decimal`; a plain `int` on an order object is refused as `provider_response_unrecognised`, because a bare int amount is the smallest unit everywhere else in this package. (`NanswapProvider` itself reads a JSON integer on the wire — `2` — as its exact digits, since a JSON integer is exact; it is the float form that is lossy) |
 | `provider_response_unrecognised` | a response shape this code does not know — refused, never defaulted. For an order this means one that cannot be verified: a field missing, or an expected output, payout address or pay-in address that is missing, empty or unparseable, or an input that is not a positive integer of micro-USDC. That is distinct from `order_terms_changed` / `order_destination_changed`, which mean the order was read and its terms differ |
+| `invalid_swap_pair` | a hop with no network (`from_network=""`), or a currency that already carries one (`"USDC-BASE"`). Refused before any request. 0.1.0 forwarded both to Nanswap's partner endpoints, which took the network as a separate field; the endpoints now used take only a ticker that names the chain (`USDC-BASE`), so forwarding either would send a ticker that names no chain, and guessing the chain of someone's USDC is how it is lost |
+| `provider_refused` | the provider's own "no": a 4xx, or a reply whose body is an error (`{"error": ...}`), with the provider's words in the message. Nothing was created and nothing is recorded, so a retry may ask again — except an error reply to create-order that also carries an order `id`, which is `order_unconfirmed` |
+| `provider_unreachable` | a request that provably never left the machine: connection refused, a host name that did not resolve, a proxy that refused the tunnel. Nothing is recorded and a retry may POST. A timeout, a reset or a reply cut short is *not* this — the request may have arrived — and on create-order is `order_unconfirmed` |
+| `order_unconfirmed` | a second order after a create-order whose outcome is unknown: a 5xx, a timeout or dropped connection, an unreadable 2xx reply, an error reply carrying an order id, an exception from a custom transport or provider that cannot be classified, or a process that stopped mid-request. The key is recorded and a retry under it raises this again and POSTs nothing; look the order up with the provider before creating another |
+| `order_network_unconfirmed` | funding an order whose reply names a ticker other than the planned one (`from: "USDC-BASE"` on a `USDC-BSC` plan): its pay-in address may be on another chain, and USDC sent on the wrong chain does not come back. A reply with no `from` is read — the request already named the chain |
 
 Two bars, on purpose: the swap's *estimate* must clear the quote plus headroom,
 but a created order's *committed* output is held to the quote itself, inclusive.
@@ -142,9 +147,9 @@ decimal string. `float` is refused everywhere, in both directions.
    needs a Nanswap API key (the API answers 401 without one) and none was
    available, so no order has been created and no USDC has been swapped with
    this code.** The order reply is parsed field by field, anything unrecognised
-   is refused, and an order that does not name the planned ticker
-   (`USDC-BASE`) back is refused as `order_network_unconfirmed` and never
-   funded. The first person with a key should create one small order and
+   is refused, and an order whose reply names a ticker other than the planned
+   one (`USDC-BASE`) is refused as `order_network_unconfirmed` and never
+   funded (a reply that names none is read: the request already named it). The first person with a key should create one small order and
    reconcile `_order_from`.
 2. **A swap is custodial for the duration of the hop.** USDC leaves the agent's
    control and arrives as XNO only if the provider performs. Nothing here makes

@@ -5,8 +5,10 @@ pursekeeper.dev's rank 3: *"an agent with USDC pays a Nano seller through a
 Nanswap-style hop"*, because *"Nobody in the x402 buyer population holds Nano"*.
 
 Runs with no network, no wallet and no key: the swap provider's HTTP seam and
-the Nano rail's RPC seam are both local stubs here. The literal responses below
-are in the shape the published ``nanswap`` npm client reads.
+the Nano rail's RPC seam are both local stubs here. The limits and estimate
+replies below carry the fields the live API answered with on 2026-11-12; the
+create-order reply is in the shape the published ``nanswap`` npm client reads,
+and has not been seen live (creating an order needs an API key).
 
     python3 examples/pay_nano_quote_from_usdc.py          # the whole hop
     python3 examples/pay_nano_quote_from_usdc.py refuse   # the shortcut, refused
