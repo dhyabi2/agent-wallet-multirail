@@ -40,6 +40,7 @@ Two honest limits, stated here because they bound what this module can promise:
 from __future__ import annotations
 
 import http.client
+import contextlib
 import json
 import threading
 import urllib.error
@@ -60,6 +61,7 @@ from .mandate import (
 
 __all__ = [
     "SwapRefused",
+    "release_pending_order_key",
     "NanoQuote",
     "SwapEstimate",
     "SwapLimits",
@@ -120,6 +122,14 @@ class SwapRefused(Exception):
     refused, a host name that did not resolve, a proxy that refused the
     tunnel) is ``provider_unreachable`` and NOT ambiguous: nothing is
     recorded and a retry may POST.
+
+    A refusal raised by ``NanswapProvider``'s default HTTP layer is ALSO a
+    ``urllib.error.URLError`` (so an ``OSError``), because 0.1.0 let urllib's
+    own errors through from ``estimate``/``limits``/``order``/``create_order``
+    and a caller's ``except urllib.error.URLError`` fallback must still catch
+    it. It is not an ``HTTPError``: read ``reason`` (this module's code), not
+    ``code``. ``reason`` on such a refusal is the code string, not a socket
+    error.
     """
 
     ambiguous = False
@@ -128,6 +138,22 @@ class SwapRefused(Exception):
         self.reason = reason
         self.message = message or reason
         super().__init__("%s: %s" % (reason, self.message) if message else reason)
+
+
+class _TransportRefused(SwapRefused, urllib.error.URLError):
+    """A ``SwapRefused`` from the default HTTP layer, catchable as ``URLError``.
+
+    ``URLError.__init__`` stores its argument as ``reason``; this keeps
+    ``reason`` the stable code and ``str()`` the same text as ``SwapRefused``.
+    """
+
+    def __init__(self, reason: str, message: str = "", ambiguous: bool = False):
+        SwapRefused.__init__(self, reason, message)
+        self.reason = reason
+        self.ambiguous = ambiguous
+
+    def __str__(self):
+        return str(self.args[0]) if self.args else self.reason
 
 
 # --------------------------------------------------------------- USDC amounts
@@ -680,7 +706,10 @@ NANSWAP_CREATE_ORDER = "/create-order"
 NANSWAP_GET_ORDER = "/get-order"
 #: The names 0.1.0 exported. Kept so an import of them does not break; each now
 #: names the path ``NanswapProvider`` actually calls (the partner paths are no
-#: longer used, for the reason above).
+#: longer used, for the reason above). **They no longer name the partner
+#: endpoints**: code that built its own partner request from them (``from:
+#: "USDC"`` plus a separate network field) now posts that body to the plain
+#: ``/create-order``, which wants a ticker naming the chain (``USDC-BASE``).
 NANSWAP_ESTIMATE_PARTNER = NANSWAP_ESTIMATE
 NANSWAP_LIMITS_PARTNER = NANSWAP_LIMITS
 NANSWAP_CREATE_ORDER_PARTNER = NANSWAP_CREATE_ORDER
@@ -689,6 +718,29 @@ NANSWAP_API_KEY_HEADER = "nanswap-api-key"
 #: Cloudflare in front of the API answers 403 to urllib's default User-Agent
 #: (measured 2026-11-12); any named client is let through.
 NANSWAP_USER_AGENT = "agent-wallet-multirail (+https://github.com/dhyabi2/agent-wallet-multirail)"
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Never follow a redirect: urllib then raises the 3xx as an ``HTTPError``.
+
+    urllib's default handler re-sends a redirected POST as a GET to the
+    ``Location`` host, with every header -- the ``nanswap-api-key`` among them.
+    A create-order POST answered 3xx may already have made an order, and a
+    failure at the redirect target says nothing about that, so the 3xx itself
+    is what ``_http`` reads (as ambiguous) and the key never leaves for
+    another host.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
+def _open(request, timeout=None):
+    """The one place a socket is opened (the tests patch this)."""
+    return _OPENER.open(request, timeout=timeout)
 
 
 def nanswap_ticker(currency: str, network: str) -> str:
@@ -834,9 +886,11 @@ def _int_text(value: int, where: str, field_name: str) -> str:
 
 def _ambiguous_refusal(reason: str, message: str) -> SwapRefused:
     """A refusal for a request that may have reached the provider and been acted on."""
-    refused = SwapRefused(reason, message)
-    refused.ambiguous = True
-    return refused
+    return _TransportRefused(reason, message, ambiguous=True)
+
+
+def _carries_order_id(payload) -> bool:
+    return isinstance(payload, Mapping) and payload.get("id") not in (None, "")
 
 
 def _never_sent(exc: BaseException) -> bool:
@@ -905,41 +959,49 @@ class NanswapProvider:
         headers.setdefault("Accept", "application/json")
         request = urllib.request.Request(url, data=data, headers=headers, method=method)
         # Every failure below is a SwapRefused. Only a 4xx is a clean "no":
-        # the provider read the request and turned it down. A 5xx, a timeout,
+        # the provider read the request and turned it down. A 3xx (never
+        # followed, see _NoRedirect), a 5xx, a timeout,
         # a dropped connection or a 2xx reply that cannot be read all leave
         # open whether the provider acted on the request, so they are marked
         # ``ambiguous`` -- for a create-order POST that means an order may
         # exist, and ``create_order`` records it rather than letting a retry
         # POST a second one.
         try:
-            with urllib.request.urlopen(request, timeout=self._timeout) as response:
+            with _open(request, timeout=self._timeout) as response:
                 body_bytes = response.read()
         except urllib.error.HTTPError as exc:
             # The API puts its reason in the body of a 4xx ({"error": "..."}).
-            ambiguous = exc.code >= 500
+            # A 3xx is not followed: on a POST it may come after an order was
+            # made, so it is as ambiguous as a 5xx.
+            ambiguous = exc.code >= 500 or 300 <= exc.code < 400
             try:
                 text = exc.read().decode("utf-8", "replace")
             except Exception:  # noqa: BLE001 - the error body is best effort
                 text = ""
             try:
-                said = json.loads(text)
+                said = json.loads(text, parse_float=str)
             except ValueError:
                 said = None
+            message = "the provider answered HTTP %s: %s" % (exc.code, text[:200])
+            reason = "provider_refused"
             try:
                 _provider_error(said, "HTTP %s" % exc.code)
-            except SwapRefused as refused:
-                refused.ambiguous = ambiguous
-                raise refused from exc
-            refused = SwapRefused("provider_refused",
-                                  "the provider answered HTTP %s: %s" % (exc.code, text[:200]))
-            refused.ambiguous = ambiguous
+            except SwapRefused as named:
+                reason, message = named.reason, named.message
+            if _carries_order_id(said):
+                # An error reply that names an order may describe one that
+                # was made, whatever the status: not a clean "no".
+                ambiguous = True
+                message = "%s (the reply also carries order id %r)" % (message, said.get("id"))
+            refused = _TransportRefused(reason, message, ambiguous=ambiguous)
+            refused.payload = said
             raise refused from exc
         except (OSError, http.client.HTTPException) as exc:
             if _never_sent(exc):
                 # Refused at connect, a name that did not resolve, a proxy
                 # that would not open the tunnel: nothing reached the
                 # provider, so this is a clean failure and stays retryable.
-                raise SwapRefused(
+                raise _TransportRefused(
                     "provider_unreachable",
                     "the request never reached the provider (%s: %s); nothing was sent, "
                     "so it is safe to try again" % (type(exc).__name__, exc)) from exc
@@ -984,10 +1046,11 @@ class NanswapProvider:
         except SwapRefused as refused:
             # An error body that also carries an order id may describe an
             # order that was made: that is not a clean "no".
-            if isinstance(payload, Mapping) and payload.get("id") not in (None, ""):
+            if _carries_order_id(payload):
                 refused.ambiguous = True
                 refused.message = "%s (the reply also carries order id %r)" % (
                     refused.message, payload.get("id"))
+                refused.payload = payload
             raise
         return payload
 
@@ -996,6 +1059,12 @@ class NanswapProvider:
     def estimate(self, *, from_currency: str, from_network: str, from_amount_micro: int,
                  to_currency: str = "XNO", to_network: str = "") -> SwapEstimate:
         """Forward estimate: this much in, how much XNO out.
+
+        ``from_network`` is the chain, joined into the ticker (``USDC`` +
+        ``BASE`` -> ``USDC-BASE``); in 0.1.0 it was sent as its own field.
+        ``to_network`` is accepted for 0.1.0 callers and only echoed back on
+        the ``SwapEstimate``: it is NOT sent, because the output is always XNO
+        on Nano mainnet and the plain endpoints have no field for it.
 
         There is no reverse estimate for a USDC route (``get-estimate-reverse``
         answers "from ticker invalid" for ``USDC-BASE``, measured 2026-11-12),
@@ -1053,7 +1122,7 @@ class NanswapProvider:
             # and stays retryable. An ambiguous one may have created an order.
             if not exc.ambiguous:
                 raise
-            raise self._unconfirmed(plan, exc.message) from exc
+            raise self._unconfirmed(plan, exc.message, getattr(exc, "payload", None)) from exc
         except Exception as exc:  # noqa: BLE001 - a custom transport can raise anything
             # A custom transport raising what can only happen while
             # connecting (refused, unresolved, tunnel refused) sent nothing,
@@ -1101,10 +1170,11 @@ class NanswapProvider:
             raise
 
     @staticmethod
-    def _unconfirmed(plan: SwapPlan, what: str) -> SwapRefused:
+    def _unconfirmed(plan: SwapPlan, what: str, payload: Any = None) -> SwapRefused:
         """The refusal for a create-order POST whose outcome is unknown.
 
-        It carries an ``order`` with no id, so ``pay_nano_quote_from_usdc``
+        It carries an ``order`` (with the reply's id and the reply itself when
+        an error reply named one, else none), so ``pay_nano_quote_from_usdc``
         records it under the order_key and a retry under that key raises this
         again instead of POSTing a second order.
         """
@@ -1115,8 +1185,13 @@ class NanswapProvider:
             "it up with the provider (its order history for %s %s to %s) before creating "
             "another" % (plan.order_key, what, plan.from_amount, plan.from_currency,
                          plan.own_address))
-        refused.order = {"order_id": None, "pay_in_address": None, "raw": None,
-                         "unconfirmed": True}
+        order_id = payload.get("id") if _carries_order_id(payload) else None
+        refused.order = {
+            "order_id": order_id,
+            "pay_in_address": payload.get("payinAddress") if isinstance(payload, Mapping) else None,
+            "raw": dict(payload) if isinstance(payload, Mapping) else payload,
+            "unconfirmed": True,
+        }
         return refused
 
     def _order_from(self, payload, where: str) -> SwapOrder:
@@ -1196,19 +1271,69 @@ def pay_nano_quote_from_usdc(
         return _pay_hop(quote, own_address, provider, key, **args)
 
 
-#: One lock per order_key, for every executing ``pay_nano_quote_from_usdc`` in
-#: this process. It serialises threads; it cannot serialise two processes
-#: sharing one persisted order_log, which is the caller's to arrange.
+#: One lock per order_key IN USE, for every executing ``pay_nano_quote_from_usdc``
+#: in this process: ``key -> [RLock, holders]``. An entry is removed when its
+#: last holder or waiter leaves, so the table holds only keys being worked on,
+#: never one per key ever seen. It serialises threads; it cannot serialise two
+#: processes sharing one persisted order_log, which is the caller's to arrange.
 _ORDER_KEY_LOCKS: Dict[str, Any] = {}
 _ORDER_KEY_LOCKS_GUARD = threading.Lock()
 
 
+@contextlib.contextmanager
 def _order_key_lock(key: str):
     with _ORDER_KEY_LOCKS_GUARD:
-        lock = _ORDER_KEY_LOCKS.get(key)
-        if lock is None:
-            lock = _ORDER_KEY_LOCKS[key] = threading.RLock()
-        return lock
+        entry = _ORDER_KEY_LOCKS.get(key)
+        if entry is None:
+            entry = _ORDER_KEY_LOCKS[key] = [threading.RLock(), 0]
+        entry[1] += 1
+    try:
+        with entry[0]:
+            yield
+    finally:
+        with _ORDER_KEY_LOCKS_GUARD:
+            entry[1] -= 1
+            if entry[1] == 0 and _ORDER_KEY_LOCKS.get(key) is entry:
+                del _ORDER_KEY_LOCKS[key]
+
+
+def release_pending_order_key(order_log: Dict[str, Any], order_key: str) -> bool:
+    """Free an order_key left ``order_unconfirmed``, once the provider shows no order.
+
+    A create-order whose outcome is unknown -- a 5xx, a timeout, a process that
+    stopped mid-request, or an exception a custom provider raised that this
+    module cannot classify (a ``ValueError``, a requests-style
+    ``ConnectionError``) -- leaves the key recorded, and every retry under it
+    raises ``order_unconfirmed`` and creates nothing. That is deliberate: only
+    the provider knows whether an order was made. **Call this only after
+    looking the order up with the provider and finding none**; the next call
+    under the key then plans afresh and may create an order.
+
+    Returns True if an entry was removed, False if the key had none. Refuses
+    ``order_key_not_releasable`` for a key that holds a created order (read or
+    refused) or one that has sent: freeing those is how a swap is bought, or a
+    seller paid, twice. Holds the key's lock, so it never races an executing
+    call on the same key in this process.
+    """
+    if not isinstance(order_key, str) or not order_key.strip():
+        raise SwapRefused("invalid_order_key", "order_key must be a non-empty string")
+    key = order_key.strip()
+    with _order_key_lock(key):
+        entry = order_log.get(key)
+        if entry is None:
+            return False
+        order = entry.get("order") if isinstance(entry, Mapping) else None
+        unconfirmed = isinstance(entry, Mapping) and entry.get("send_attempted") is None and (
+            (entry.get("pending") and order is None)
+            or (isinstance(order, Mapping) and order.get("unconfirmed") is True))
+        if not unconfirmed:
+            raise SwapRefused(
+                "order_key_not_releasable",
+                "order_key %r holds a created order or a send, not an unconfirmed create-order; "
+                "freeing it would let a retry buy the swap or pay the seller a second time"
+                % key)
+        del order_log[key]
+        return True
 
 
 def _pay_hop(quote, own_address, provider, key, *, from_currency, from_network, from_amount,

@@ -117,7 +117,8 @@ python3 examples/pay_nano_quote_from_usdc.py refuse   # the shortcut, refused (e
 | `invalid_swap_pair` | a hop with no network (`from_network=""`), or a currency that already carries one (`"USDC-BASE"`). Refused before any request. 0.1.0 forwarded both to Nanswap's partner endpoints, which took the network as a separate field; the endpoints now used take only a ticker that names the chain (`USDC-BASE`), so forwarding either would send a ticker that names no chain, and guessing the chain of someone's USDC is how it is lost |
 | `provider_refused` | the provider's own "no": a 4xx, or a reply whose body is an error (`{"error": ...}`), with the provider's words in the message. Nothing was created and nothing is recorded, so a retry may ask again — except an error reply to create-order that also carries an order `id`, which is `order_unconfirmed` |
 | `provider_unreachable` | a request that provably never left the machine: connection refused, a host name that did not resolve, a proxy that refused the tunnel. Nothing is recorded and a retry may POST. A timeout, a reset or a reply cut short is *not* this — the request may have arrived — and on create-order is `order_unconfirmed` |
-| `order_unconfirmed` | a second order after a create-order whose outcome is unknown: a 5xx, a timeout or dropped connection, an unreadable 2xx reply, an error reply carrying an order id, an exception from a custom transport or provider that cannot be classified, or a process that stopped mid-request. The key is recorded and a retry under it raises this again and POSTs nothing; look the order up with the provider before creating another |
+| `order_unconfirmed` | a second order after a create-order whose outcome is unknown: a 3xx (redirects are never followed, and the API key is never sent to another host), a 5xx, a timeout or dropped connection, an unreadable 2xx reply, an error reply carrying an order id (at any status, 4xx included; the id and the reply are kept in the record), an exception from a custom transport or provider that cannot be classified, or a process that stopped mid-request. The key is recorded and a retry under it raises this again and POSTs nothing; look the order up with the provider before creating another. Once the provider shows no order, `release_pending_order_key(order_log, order_key)` frees the key and the next call plans afresh |
+| `order_key_not_releasable` | `release_pending_order_key` on a key that holds a created order (read or refused) or a send: freeing it would buy the swap, or pay the seller, a second time |
 | `order_network_unconfirmed` | funding an order whose reply names a ticker other than the planned one (`from: "USDC-BASE"` on a `USDC-BSC` plan): its pay-in address may be on another chain, and USDC sent on the wrong chain does not come back. A reply with no `from` is read — the request already named the chain |
 
 Two bars, on purpose: the swap's *estimate* must clear the quote plus headroom,
@@ -134,6 +135,37 @@ already sent always answers `send_already_attempted`, naming the block, first.
 
 Every amount crosses this module as an integer (raw, micro-USDC) or an exact
 decimal string. `float` is refused everywhere, in both directions.
+
+### Upgrading from 0.1.0
+
+- **The default transport raises `SwapRefused`, not urllib's errors.** With no
+  `transport=`, `estimate`, `limits`, `order` and `create_order` used to let
+  `urllib.error.HTTPError` / `URLError` through. They now raise `SwapRefused`
+  with a stable `reason` (`provider_refused`, `provider_unreachable`, ...).
+  Each one is *also* a `urllib.error.URLError` (so an `OSError`), so an
+  existing `except urllib.error.URLError:` fallback still catches it; it is
+  not an `HTTPError`, so code reading `exc.code` should read `exc.reason`
+  instead. A custom `transport` is unchanged: what it raises is classified,
+  not wrapped, on the read path.
+- **A key left `order_unconfirmed` stays that way until released.** A
+  create-order whose outcome is unknown -- including an exception a custom
+  provider raises that cannot be classified (a `ValueError`, a requests-style
+  `ConnectionError`) -- leaves the `order_key` recorded, and every retry
+  under it raises `order_unconfirmed` and creates nothing. 0.1.0 created the
+  order on retry. Look the order up with the provider; if there is none, call
+  `release_pending_order_key(order_log, order_key)` and retry. A provider that
+  can tell a never-sent failure apart should raise `ConnectionRefusedError` /
+  `socket.gaierror` (or a `URLError` wrapping one), which frees the key itself.
+- **`NANSWAP_*_PARTNER` no longer name the partner endpoints.** They still
+  import, but each is now the plain path (`NANSWAP_CREATE_ORDER_PARTNER ==
+  "/create-order"`). Code that built its own partner request from them --
+  `from: "USDC"` plus a separate network field -- now posts that body to
+  `/create-order`, which wants a ticker naming the chain (`USDC-BASE`). Use
+  `NanswapProvider`, or build the ticker with `nanswap_ticker`.
+- **`from_network` is joined into the ticker; `to_network` is not sent.**
+  `estimate` and `limits` accept `to_network` for 0.1.0 callers and echo it on
+  the `SwapEstimate`, but it is dropped from the request: the output is always
+  XNO on Nano mainnet and the plain endpoints have no field for it.
 
 ### Two honest limits
 

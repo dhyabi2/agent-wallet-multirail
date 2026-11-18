@@ -1541,7 +1541,7 @@ class NanswapAsItAnsweredLive(unittest.TestCase):
             reply = mock.MagicMock()
             reply.__enter__.return_value.read.return_value = body
             return reply
-        patcher = mock.patch("urllib.request.urlopen", urlopen)
+        patcher = mock.patch("agent_wallet_multirail.swap._open", urlopen)
         patcher.start()
         self.addCleanup(patcher.stop)
         return NanswapProvider(api_key="KEY")
@@ -1661,7 +1661,7 @@ def _served_by(test, answer):
         reply = mock.MagicMock()
         reply.__enter__.return_value.read.return_value = body
         return reply
-    patcher = mock.patch("urllib.request.urlopen", urlopen)
+    patcher = mock.patch("agent_wallet_multirail.swap._open", urlopen)
     patcher.start()
     test.addCleanup(patcher.stop)
     return NanswapProvider(api_key="KEY")
@@ -2063,3 +2063,263 @@ class TheReadmeListsEveryNewRefusal(unittest.TestCase):
         row = [line for line in readme.splitlines() if line.startswith("| `invalid_swap_pair`")]
         self.assertIn("USDC-BASE", row[0])
         self.assertIn("0.1.0", row[0])
+
+
+# ------------------------------------------- review round at 86cf5f7 (11-17)
+
+
+def _http_error(status, body):
+    import io
+    import urllib.error
+
+    def answer(request):
+        if request.get_method() == "POST":
+            raise urllib.error.HTTPError(request.full_url, status, "x", {}, io.BytesIO(body))
+        if "get-limits" in request.full_url:
+            return b'{"min":1,"max":100}'
+        return b'{"amountTo":"1.5"}'
+    return answer
+
+
+class A4xxCarryingAnOrderIdIsUnconfirmed(unittest.TestCase):
+    """break #1: an HTTP 4xx whose body names an order id may be an order."""
+
+    def test_it_is_recorded_with_its_id_and_never_posted_twice(self):
+        provider = _served_by(self, _http_error(400, b'{"error":"payin failed","id":"ord-1"}'))
+        log = {}
+        for _ in range(2):
+            with self.assertRaises(SwapRefused) as caught:
+                _hop(provider, log)
+            self.assertEqual(caught.exception.reason, "order_unconfirmed")
+        self.assertEqual(len([r for r in self.requests if r.get_method() == "POST"]), 1)
+        self.assertEqual(log["k1"]["order"]["order_id"], "ord-1")
+        self.assertEqual(log["k1"]["order"]["raw"], {"error": "payin failed", "id": "ord-1"})
+        self.assertIn("ord-1", log["k1"]["refused"]["message"])
+
+    def test_a_4xx_without_an_id_stays_a_clean_refusal(self):
+        provider = _served_by(self, _http_error(400, b'{"error":"tickers not valid"}'))
+        log = {}
+        for _ in range(2):
+            with self.assertRaises(SwapRefused) as caught:
+                _hop(provider, log)
+            self.assertEqual(caught.exception.reason, "provider_refused")
+            self.assertFalse(caught.exception.ambiguous)
+        self.assertEqual(log, {})
+
+
+class AnUnconfirmedRecordKeepsTheIdAndTheReply(_NanswapOrders):
+    """break #3: a 2xx error reply that carries an id keeps both in the record."""
+
+    def test_id_and_raw(self):
+        reply = {"id": "ord-x", "error": "rate limited", "payinAddress": "0xpay"}
+        provider, log = self.transport(lambda: dict(reply)), {}
+        with self.assertRaises(SwapRefused):
+            _hop(provider, log)
+        order = log["k1"]["order"]
+        self.assertEqual(order["order_id"], "ord-x")
+        self.assertEqual(order["raw"], reply)
+        self.assertEqual(order["pay_in_address"], "0xpay")
+        self.assertTrue(order["unconfirmed"])
+
+
+class _Loopback:
+    """A real HTTP server on 127.0.0.1 that records what it is sent."""
+
+    def __init__(self, handle):
+        import http.server
+        import threading
+        self.seen = []
+        outer = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def _any(self):
+                length = int(self.headers.get("Content-Length") or 0)
+                if length:
+                    self.rfile.read(length)
+                outer.seen.append((self.command, self.path, dict(self.headers)))
+                status, headers, body = handle(self.command, self.path)
+                self.send_response(status)
+                for name, value in headers.items():
+                    self.send_header(name, value)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            do_GET = do_POST = _any
+
+        self.server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        self.url = "http://127.0.0.1:%d" % self.server.server_address[1]
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+
+    def close(self):
+        self.server.shutdown()
+        self.server.server_close()
+
+
+class ARedirectedCreateOrderIsNeverFollowed(unittest.TestCase):
+    """break #2: a 3xx on the POST is ambiguous, never followed, the key never forwarded."""
+
+    def run_with(self, status, target_status):
+        elsewhere = _Loopback(lambda method, path: (target_status, {}, b'{"error":"nope"}'))
+        self.addCleanup(elsewhere.close)
+
+        def provider_side(method, path):
+            if method == "POST":
+                return status, {"Location": elsewhere.url + "/v1/get-order?id=ord-r"}, b""
+            if "get-limits" in path:
+                return 200, {}, b'{"min":1,"max":100}'
+            return 200, {}, b'{"amountTo":"1.5"}'
+        nanswap = _Loopback(provider_side)
+        self.addCleanup(nanswap.close)
+        provider = NanswapProvider(api_key="SECRET-KEY", base_url=nanswap.url + "/v1",
+                                   timeout=5)
+        log = {}
+        for _ in range(2):
+            with self.assertRaises(SwapRefused) as caught:
+                _hop(provider, log)
+            self.assertEqual(caught.exception.reason, "order_unconfirmed")
+        posts = [seen for seen in nanswap.seen if seen[0] == "POST"]
+        self.assertEqual(len(posts), 1, "a retry POSTed a second order")
+        self.assertEqual(elsewhere.seen, [], "the redirect was followed")
+
+    def test_302_to_a_refusing_host(self):
+        self.run_with(302, 404)
+
+    def test_303_to_a_host_answering_400(self):
+        self.run_with(303, 400)
+
+    def test_301_and_307(self):
+        for status in (301, 307):
+            with self.subTest(status=status):
+                self.run_with(status, 400)
+
+
+class ACustomProvidersExceptionCanBeReleased(unittest.TestCase):
+    """user #1: a key left pending by a provider's own exception has a release API."""
+
+    def test_release_then_retry_creates_the_order(self):
+        from agent_wallet_multirail.swap import release_pending_order_key
+        log = {}
+        with self.assertRaises(ValueError):
+            _hop(RecordingProvider(fail_create=ValueError("bad body")), log)
+        stuck = RecordingProvider()
+        with self.assertRaises(SwapRefused) as caught:
+            _hop(stuck, log)
+        self.assertEqual(caught.exception.reason, "order_unconfirmed")
+        self.assertEqual(stuck.created, [])
+        self.assertTrue(release_pending_order_key(log, "k1"))
+        self.assertNotIn("k1", log)
+        provider = RecordingProvider()
+        result = _hop(provider, log, balance=iter([0, 2 * RAW]).__next__)
+        self.assertEqual(len(provider.created), 1)
+        self.assertIsInstance(result, SwapHopResult)
+        self.assertFalse(release_pending_order_key(log, "absent"))
+
+    def test_an_unconfirmed_5xx_record_can_be_released(self):
+        from agent_wallet_multirail.swap import release_pending_order_key
+        provider = _served_by(self, _http_error(502, b"bad gateway"))
+        log = {}
+        with self.assertRaises(SwapRefused):
+            _hop(provider, log)
+        self.assertTrue(release_pending_order_key(log, " k1 "))
+        self.assertEqual(log, {})
+
+    def test_a_created_or_sent_order_is_never_released(self):
+        from agent_wallet_multirail.swap import release_pending_order_key
+        log = {}
+        with self.assertRaises(SwapRefused):
+            _hop(RecordingProvider(), log)              # created, swap_not_received_yet
+        with self.assertRaises(SwapRefused) as caught:
+            release_pending_order_key(log, "k1")
+        self.assertEqual(caught.exception.reason, "order_key_not_releasable")
+        self.assertIn("k1", log)
+
+
+class TheDefaultTransportsRefusalIsStillAUrlError(unittest.TestCase):
+    """user #2: an existing ``except urllib.error.URLError`` still catches it."""
+
+    def test_a_4xx_on_estimate(self):
+        import urllib.error
+
+        def answer(request):
+            raise _http_error_obj(request, 400, b'{"error":true,"message":"tickers not valid"}')
+        provider = _served_by(self, answer)
+        try:
+            provider.estimate(from_currency="USDC", from_network="BASE", from_amount_micro=1)
+        except urllib.error.URLError as exc:
+            self.assertIsInstance(exc, SwapRefused)
+            self.assertEqual(exc.reason, "provider_refused")
+            self.assertIn("tickers not valid", str(exc))
+            self.assertTrue(str(exc).startswith("provider_refused: "))
+        else:
+            self.fail("no refusal")
+
+    def test_unreachable_and_ambiguous(self):
+        import socket
+        import urllib.error
+        for error, reason in (
+                (urllib.error.URLError(ConnectionRefusedError(111, "refused")),
+                 "provider_unreachable"),
+                (urllib.error.URLError(socket.timeout("timed out")), "provider_unreachable"),
+                (urllib.error.HTTPError("u", 503, "x", {}, None), "provider_refused")):
+            def answer(request, error=error):
+                raise error
+            with self.subTest(reason=reason):
+                with self.assertRaises(urllib.error.URLError) as caught:
+                    _served_by(self, answer).limits(from_currency="USDC", from_network="BASE")
+                self.assertEqual(caught.exception.reason, reason)
+
+
+def _http_error_obj(request, status, body):
+    import io
+    import urllib.error
+    return urllib.error.HTTPError(request.full_url, status, "x", {}, io.BytesIO(body))
+
+
+class TheLockTableHoldsOnlyKeysInUse(unittest.TestCase):
+    """break #4 / user #5: one lock per key ever seen was never freed."""
+
+    def test_it_empties(self):
+        from agent_wallet_multirail import swap
+        for index in range(50):
+            with self.assertRaises(SwapRefused):
+                _hop(RecordingProvider(), {}, order_key="lock-%d" % index)
+        self.assertEqual([k for k in swap._ORDER_KEY_LOCKS if k.startswith("lock-")], [])
+
+    def test_it_still_serialises_one_key(self):
+        import threading
+        import time
+        from agent_wallet_multirail import swap
+        order, inside = [], []
+
+        def worker(name):
+            with swap._order_key_lock("same"):
+                inside.append(name)
+                self.assertEqual(len(inside), 1)
+                time.sleep(0.02)
+                order.append(name)
+                inside.remove(name)
+        threads = [threading.Thread(target=worker, args=(n,)) for n in range(5)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(10)
+        self.assertEqual(sorted(order), list(range(5)))
+        self.assertNotIn("same", swap._ORDER_KEY_LOCKS)
+
+
+class TheReadmeAndChangelogSayWhatChanged(unittest.TestCase):
+    """user #1-#4: the release API, URLError, PARTNER aliases and to_network are documented."""
+
+    def test_docs(self):
+        import pathlib
+        root = pathlib.Path(__file__).resolve().parent.parent
+        readme = (root / "README.md").read_text()
+        changelog = (root / "CHANGELOG.md").read_text()
+        for text in (readme, changelog):
+            for needle in ("release_pending_order_key", "URLError", "_PARTNER", "to_network"):
+                self.assertIn(needle, text, needle)
+        self.assertIn("| `order_key_not_releasable` |", readme)
