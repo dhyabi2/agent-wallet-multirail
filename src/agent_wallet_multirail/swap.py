@@ -69,6 +69,7 @@ __all__ = [
     "SwapPlan",
     "SwapHopResult",
     "NanswapProvider",
+    "nanswap_ticker",
     "plan_swap_hop",
     "pay_nano_quote_from_usdc",
     "usdc_to_micro",
@@ -129,7 +130,12 @@ class SwapRefused(Exception):
     and a caller's ``except urllib.error.URLError`` fallback must still catch
     it. It is not an ``HTTPError``: read ``reason`` (this module's code), not
     ``code``. ``reason`` on such a refusal is the code string, not a socket
-    error.
+    error. That includes ``order_unconfirmed`` from ``create_order`` (and from
+    ``pay_nano_quote_from_usdc`` on the call that made the request) when the
+    HTTP layer's own failure caused it. Refusals this module raises itself --
+    ``no_api_key``, ``invalid_api_key``, ``invalid_swap_pair``, a refused
+    order's terms, a recorded refusal read back on a retry, and anything about
+    a custom ``transport`` -- are plain ``SwapRefused``, not ``URLError``.
     """
 
     ambiguous = False
@@ -735,12 +741,81 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-_OPENER = urllib.request.build_opener(_NoRedirect)
+def _is_stdlib_urlopen(func) -> bool:
+    """True when ``func`` is the standard library's own ``urllib.request.urlopen``.
+
+    Checked by the function's code, not by identity captured at import time, so
+    a test suite that patched ``urlopen`` before this module was first imported
+    is still seen as having patched it.
+    """
+    import types
+
+    if not isinstance(func, types.FunctionType):
+        return False
+    code = func.__code__
+    filename = code.co_filename.replace("\\", "/")
+    return (code.co_name == "urlopen" and func.__module__ == "urllib.request"
+            and filename.endswith("urllib/request.py"))
 
 
 def _open(request, timeout=None):
-    """The one place a socket is opened (the tests patch this)."""
-    return _OPENER.open(request, timeout=timeout)
+    """The one place a socket is opened (patch this, or ``urllib.request.urlopen``).
+
+    Both names are looked up at call time. When ``urllib.request.urlopen`` has
+    been replaced (``mock.patch("urllib.request.urlopen")`` in a downstream
+    test suite, as worked with 0.1.0), the replacement is called, so such a
+    suite never reaches the live API. Otherwise the request goes through an
+    opener built from ``urllib.request`` now, with redirects never followed
+    (see ``_NoRedirect``). A replacement ``urlopen`` decides for itself
+    whether it follows redirects; one that wraps the real network should not.
+    """
+    urlopen = urllib.request.urlopen
+    if not _is_stdlib_urlopen(urlopen):
+        return urlopen(request, timeout=timeout)
+    return urllib.request.build_opener(_NoRedirect).open(request, timeout=timeout)
+
+
+def _header_problem(name, value) -> Optional[str]:
+    """Why ``name: value`` cannot be sent as an HTTP header, or None.
+
+    http.client refuses such a header with a ``ValueError`` (its text quotes
+    the value) only once the request is being built; checked here first so the
+    refusal is clean, never ambiguous, and never repeats the value.
+    """
+    if not isinstance(name, str) or not name or not name.isascii() \
+            or any(c in name for c in ' \t\r\n:()<>@,;\\"/[]?={}') \
+            or any(ord(c) < 0x21 or ord(c) > 0x7e for c in name):
+        return "a header name is not a valid HTTP token"
+    if not isinstance(value, str):
+        return "header %s is %s, not a string" % (name, type(value).__name__)
+    if any((ord(c) < 0x20 and c != "\t") or ord(c) == 0x7f or ord(c) > 0xff for c in value):
+        return "header %s carries a control or non-Latin-1 character" % name
+    return None
+
+
+def _api_key_problem(api_key) -> Optional[str]:
+    """Why ``api_key`` cannot be sent as the ``nanswap-api-key`` header, or None.
+
+    A key is a single token of visible ASCII. Anything else -- a trailing
+    newline from a file or an environment variable, a space, a tab -- is
+    refused rather than trimmed: the key a caller meant is theirs to fix. The
+    message never contains the key.
+    """
+    if not isinstance(api_key, str):
+        return "the API key is %s, not a string" % type(api_key).__name__
+    if any(ord(c) < 0x21 or ord(c) > 0x7e for c in api_key):
+        return ("the API key contains whitespace (a trailing newline?) or a character that "
+                "is not visible ASCII")
+    return None
+
+
+def _redact(text: str, secret) -> str:
+    """``text`` with every occurrence of ``secret`` (and its repr body) replaced."""
+    if not isinstance(text, str) or not isinstance(secret, str) or not secret:
+        return text
+    for form in {secret, repr(secret)[1:-1], secret.strip()} - {""}:
+        text = text.replace(form, "[redacted]")
+    return text
 
 
 def nanswap_ticker(currency: str, network: str) -> str:
@@ -957,7 +1032,22 @@ class NanswapProvider:
         headers = dict(headers)
         headers.setdefault("User-Agent", NANSWAP_USER_AGENT)
         headers.setdefault("Accept", "application/json")
-        request = urllib.request.Request(url, data=data, headers=headers, method=method)
+        # Checked before anything is opened: a header http.client would refuse
+        # mid-request (raising a ValueError that quotes its value, the API key
+        # among them) is refused here, cleanly, as never sent.
+        for name, value in headers.items():
+            problem = _header_problem(name, value)
+            if problem is not None:
+                raise _TransportRefused(
+                    "invalid_request",
+                    "%s; nothing was sent, so it is safe to try again once fixed" % problem)
+        try:
+            request = urllib.request.Request(url, data=data, headers=headers, method=method)
+        except ValueError as exc:
+            raise _TransportRefused(
+                "invalid_request",
+                "the request URL cannot be sent (%s); nothing was sent"
+                % _redact(str(exc), self._api_key)) from exc
         # Every failure below is a SwapRefused. Only a 4xx is a clean "no":
         # the provider read the request and turned it down. A 3xx (never
         # followed, see _NoRedirect), a 5xx, a timeout,
@@ -993,7 +1083,8 @@ class NanswapProvider:
                 # was made, whatever the status: not a clean "no".
                 ambiguous = True
                 message = "%s (the reply also carries order id %r)" % (message, said.get("id"))
-            refused = _TransportRefused(reason, message, ambiguous=ambiguous)
+            refused = _TransportRefused(reason, _redact(message, self._api_key),
+                                        ambiguous=ambiguous)
             refused.payload = said
             raise refused from exc
         except (OSError, http.client.HTTPException) as exc:
@@ -1004,13 +1095,14 @@ class NanswapProvider:
                 raise _TransportRefused(
                     "provider_unreachable",
                     "the request never reached the provider (%s: %s); nothing was sent, "
-                    "so it is safe to try again" % (type(exc).__name__, exc)) from exc
+                    "so it is safe to try again"
+                    % (type(exc).__name__, _redact(str(exc), self._api_key))) from exc
             # Timeouts, resets, a reply cut short: the request may have been
             # sent and acted on before the connection failed.
             raise _ambiguous_refusal(
                 "provider_unreachable",
                 "the request to the provider failed before a reply was read (%s: %s)"
-                % (type(exc).__name__, exc)) from exc
+                % (type(exc).__name__, _redact(str(exc), self._api_key))) from exc
         try:
             text = body_bytes.decode("utf-8")
         except UnicodeDecodeError as exc:
@@ -1039,6 +1131,13 @@ class NanswapProvider:
                               "%s needs a Nanswap API key (header %r); a provider built without "
                               "one can quote but cannot create an order"
                               % (path, NANSWAP_API_KEY_HEADER))
+        problem = _api_key_problem(self._api_key)
+        if problem is not None:
+            # Refused before any transport is called: nothing was sent, so this
+            # is a clean refusal and the order_key stays free.
+            raise SwapRefused("invalid_api_key",
+                              "%s cannot be sent: %s (header %r). Nothing was sent"
+                              % (path, problem, NANSWAP_API_KEY_HEADER))
         url = "%s%s" % (self._base, path)
         payload = self._transport("POST", url, {NANSWAP_API_KEY_HEADER: self._api_key}, body)
         try:
@@ -1122,18 +1221,23 @@ class NanswapProvider:
             # and stays retryable. An ambiguous one may have created an order.
             if not exc.ambiguous:
                 raise
-            raise self._unconfirmed(plan, exc.message, getattr(exc, "payload", None)) from exc
+            # From the default HTTP layer the refusal stays a URLError, as
+            # documented: 0.1.0 let urllib's error through here.
+            raise self._unconfirmed(plan, _redact(exc.message, self._api_key),
+                                    getattr(exc, "payload", None),
+                                    transport=isinstance(exc, urllib.error.URLError)) from exc
         except Exception as exc:  # noqa: BLE001 - a custom transport can raise anything
             # A custom transport raising what can only happen while
             # connecting (refused, unresolved, tunnel refused) sent nothing,
             # and stays retryable. Anything else failing mid-request cannot
             # be told apart from a failure after the order was made.
+            said = _redact(str(exc), self._api_key)
             if _never_sent(exc):
                 raise SwapRefused(
                     "provider_unreachable",
                     "the request never reached the provider (%s: %s); nothing was sent, "
-                    "so it is safe to try again" % (type(exc).__name__, exc)) from exc
-            raise self._unconfirmed(plan, "%s: %s" % (type(exc).__name__, exc)) from exc
+                    "so it is safe to try again" % (type(exc).__name__, said)) from exc
+            raise self._unconfirmed(plan, "%s: %s" % (type(exc).__name__, said)) from exc
         try:
             order = self._order_from(payload, "create-order %s" % plan.order_key)
             # The pay-in address is only safe to fund on the chain the plan
@@ -1170,15 +1274,17 @@ class NanswapProvider:
             raise
 
     @staticmethod
-    def _unconfirmed(plan: SwapPlan, what: str, payload: Any = None) -> SwapRefused:
+    def _unconfirmed(plan: SwapPlan, what: str, payload: Any = None,
+                     transport: bool = False) -> SwapRefused:
         """The refusal for a create-order POST whose outcome is unknown.
 
         It carries an ``order`` (with the reply's id and the reply itself when
         an error reply named one, else none), so ``pay_nano_quote_from_usdc``
         records it under the order_key and a retry under that key raises this
-        again instead of POSTing a second order.
+        again instead of POSTing a second order. With ``transport`` (the cause
+        was the default HTTP layer's refusal) it is also a ``URLError``.
         """
-        refused = SwapRefused(
+        refused = (_TransportRefused if transport else SwapRefused)(
             "order_unconfirmed",
             "create-order for order_key %r failed after the request may have reached the "
             "provider (%s). An order may exist at Nanswap with no reply to show for it: look "
@@ -1347,12 +1453,14 @@ def _pay_hop(quote, own_address, provider, key, *, from_currency, from_network, 
     # as though the hop were under way.
     _refuse_unplannable(quote, own_address)
 
-    limits = None
-    if check_limits and hasattr(provider, "limits"):
-        limits = provider.limits(from_currency=from_currency, from_network=from_network)
-
     recorded = (order_log or {}).get(key)
     if recorded is None:
+        # Limits only bound a NEW order. A retry reads a recorded one back and
+        # never re-plans, so it does not ask for them: a limits outage must not
+        # block the read-back of an order that already exists.
+        limits = None
+        if check_limits and hasattr(provider, "limits"):
+            limits = provider.limits(from_currency=from_currency, from_network=from_network)
         estimate = provider.estimate(from_currency=from_currency, from_network=from_network,
                                      from_amount_micro=from_amount_micro)
         plan = plan_swap_hop(quote, own_address, estimate, max_from_amount=max_from_amount,
@@ -1580,7 +1688,10 @@ def _record_refused_order(order_log: Dict[str, Any], key: str, plan: SwapPlan, o
         "balance_before_raw": before,
         "refused": {"reason": exc.reason, "message": message},
     }
-    raise SwapRefused(exc.reason, message) from (cause or exc)
+    # A refusal from NanswapProvider's default HTTP layer stays a URLError
+    # through the hop, as it is from create_order itself.
+    kind = _TransportRefused if isinstance(exc, urllib.error.URLError) else SwapRefused
+    raise kind(exc.reason, message) from (cause or exc)
 
 
 def _refuse_unplannable(quote: NanoQuote, own_address) -> None:

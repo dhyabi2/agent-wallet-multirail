@@ -2323,3 +2323,188 @@ class TheReadmeAndChangelogSayWhatChanged(unittest.TestCase):
             for needle in ("release_pending_order_key", "URLError", "_PARTNER", "to_network"):
                 self.assertIn(needle, text, needle)
         self.assertIn("| `order_key_not_releasable` |", readme)
+
+
+# ------------------------------------------- review round at cc70875 (11-18)
+
+
+_BAD_KEY = "SECRET-KEY-123\n"
+
+
+class AnApiKeyThatCannotBeAHeaderIsRefusedBeforeSending(unittest.TestCase):
+    """break M1: a key with a trailing newline was marked unconfirmed and echoed."""
+
+    def assert_clean(self, caught, log):
+        exc = caught.exception
+        self.assertEqual(exc.reason, "invalid_api_key")
+        self.assertFalse(getattr(exc, "ambiguous", False))
+        self.assertEqual(log, {}, "a refusal that sent nothing left the key recorded")
+        for text in (str(exc), exc.message, repr(exc), repr(log)):
+            self.assertNotIn("SECRET-KEY-123", text)
+
+    def test_on_a_loopback_server_nothing_is_posted_and_the_key_stays_free(self):
+        server = _Loopback(lambda method, path: (
+            200, {}, b'{"min":1,"max":100}' if "get-limits" in path else b'{"amountTo":"1.5"}'))
+        self.addCleanup(server.close)
+        provider = NanswapProvider(api_key=_BAD_KEY, base_url=server.url + "/v1", timeout=5)
+        log = {}
+        for _ in range(2):
+            with self.assertRaises(SwapRefused) as caught:
+                _hop(provider, log)
+            self.assert_clean(caught, log)
+        self.assertEqual([seen for seen in server.seen if seen[0] == "POST"], [])
+
+    def test_a_custom_transport_is_never_called_for_the_post(self):
+        posts = []
+
+        def transport(method, url, headers, body):
+            if method == "POST":
+                posts.append(url)
+            return {"min": "1", "max": "100"} if "get-limits" in url else {"amountTo": "1.5"}
+        for key in (_BAD_KEY, " SECRET-KEY-123", "SECRET KEY-123", "SECRET-KEY-123\r"):
+            with self.subTest(key=repr(key)):
+                log = {}
+                with self.assertRaises(SwapRefused) as caught:
+                    _hop(NanswapProvider(api_key=key, transport=transport), log)
+                self.assert_clean(caught, log)
+        self.assertEqual(posts, [])
+
+    def test_a_bad_header_never_reaches_the_socket_and_is_not_echoed(self):
+        from unittest import mock
+        opened = []
+        with mock.patch("agent_wallet_multirail.swap._open",
+                        lambda request, timeout=None: opened.append(request)):
+            with self.assertRaises(SwapRefused) as caught:
+                NanswapProvider()._http("GET", "http://127.0.0.1:9/x",
+                                        {"X-Thing": "SECRET-KEY-123\n"}, None)
+        self.assertEqual(caught.exception.reason, "invalid_request")
+        self.assertFalse(caught.exception.ambiguous)
+        self.assertNotIn("SECRET-KEY-123", str(caught.exception))
+        self.assertEqual(opened, [])
+
+    def test_a_custom_transports_exception_quoting_the_key_is_redacted(self):
+        log = {}
+
+        def transport(method, url, headers, body):
+            if method == "POST":
+                raise ValueError("Invalid header value %r" % headers["nanswap-api-key"])
+            return {"min": "1", "max": "100"} if "get-limits" in url else {"amountTo": "1.5"}
+        with self.assertRaises(SwapRefused) as caught:
+            _hop(NanswapProvider(api_key="SECRET-KEY-123", transport=transport), log)
+        self.assertEqual(caught.exception.reason, "order_unconfirmed")
+        self.assertNotIn("SECRET-KEY-123", str(caught.exception))
+        self.assertNotIn("SECRET-KEY-123", repr(log))
+
+
+class AnUnconfirmedCreateOrderFromHttpIsStillAUrlError(unittest.TestCase):
+    """user M1: the docs say a default-transport refusal is a URLError; create_order's was not."""
+
+    def test_create_order_and_the_hop(self):
+        import socket
+        import urllib.error
+
+        def timed_out(request):
+            raise urllib.error.URLError(socket.timeout("timed out"))
+        for name, answer in (("5xx", _http_error(502, b"bad gateway")), ("timeout", timed_out)):
+            with self.subTest(name=name):
+                provider = _served_by(self, answer)
+                with self.assertRaises(urllib.error.URLError) as caught:
+                    provider.create_order(a_plan())
+                self.assertEqual(caught.exception.reason, "order_unconfirmed")
+                self.assertIsInstance(caught.exception, SwapRefused)
+                if name == "5xx":
+                    with self.assertRaises(urllib.error.URLError) as caught:
+                        _hop(provider, {})
+                    self.assertEqual(caught.exception.reason, "order_unconfirmed")
+
+    def test_a_custom_transports_failure_is_not_a_url_error(self):
+        import urllib.error
+
+        def transport(method, url, headers, body):
+            raise RuntimeError("boom")
+        with self.assertRaises(SwapRefused) as caught:
+            NanswapProvider(api_key="KEY", transport=transport).create_order(a_plan())
+        self.assertEqual(caught.exception.reason, "order_unconfirmed")
+        self.assertNotIsInstance(caught.exception, urllib.error.URLError)
+
+
+class PatchingUrlopenStillInterceptsTheDefaultTransport(unittest.TestCase):
+    """user M2: a downstream suite that mocks urlopen must never reach the live API."""
+
+    # A local port nothing listens on: were urlopen not intercepted, the
+    # request is refused locally rather than reaching any real host.
+    BASE = "http://127.0.0.1:9/v1"
+
+    def test_a_function_replacement(self):
+        from unittest import mock
+        seen = []
+
+        def fake(request, timeout=None):
+            seen.append(request.full_url)
+            reply = mock.MagicMock()
+            reply.__enter__.return_value.read.return_value = b'{"min":1,"max":100}'
+            return reply
+        with mock.patch("urllib.request.urlopen", fake):
+            limits = NanswapProvider(base_url=self.BASE).limits(
+                from_currency="USDC", from_network="BASE")
+        self.assertEqual(limits.min_from_micro, MICRO_PER_USDC)
+        self.assertEqual(len(seen), 1)
+
+    def test_a_magicmock_and_an_autospec(self):
+        from unittest import mock
+        for kwargs in ({}, {"autospec": True}):
+            with self.subTest(autospec=bool(kwargs)):
+                with mock.patch("urllib.request.urlopen", **kwargs) as fake:
+                    fake.return_value.__enter__.return_value.read.return_value = \
+                        b'{"amountTo":"1.5"}'
+                    estimate = NanswapProvider(base_url=self.BASE).estimate(
+                        from_currency="USDC", from_network="BASE", from_amount_micro=1)
+                self.assertEqual(estimate.to_amount, "1.5")
+                self.assertEqual(fake.call_count, 1)
+
+    def test_unpatched_it_is_the_stdlib_function(self):
+        import urllib.request
+        from agent_wallet_multirail import swap
+        self.assertTrue(swap._is_stdlib_urlopen(urllib.request.urlopen))
+
+
+class ARetryOfARecordedKeyDoesNotReadLimits(unittest.TestCase):
+    """break L2: a limits outage blocked the read-back of an existing order."""
+
+    def test_it(self):
+        class LimitsGoDown(RecordingProvider):
+            calls = 0
+
+            def limits(self, **kwargs):
+                LimitsGoDown.calls += 1
+                if LimitsGoDown.calls > 1:
+                    raise SwapRefused("provider_unreachable", "limits are down")
+                return None
+        provider, log = LimitsGoDown(), {}
+        with self.assertRaises(SwapRefused) as caught:
+            _hop(provider, log)
+        self.assertEqual(caught.exception.reason, "swap_not_received_yet")
+        result = _hop(provider, log, balance=lambda: 2 * RAW)
+        self.assertIsInstance(result, SwapHopResult)
+        self.assertEqual(len(provider.created), 1)
+
+
+class SmallDocAndPackagingFixes(unittest.TestCase):
+    """user L1-L4: ticker in __all__, docs say what changed, authors unchanged."""
+
+    def test_it(self):
+        import pathlib
+        from agent_wallet_multirail import swap
+        self.assertIn("nanswap_ticker", swap.__all__)
+        root = pathlib.Path(__file__).resolve().parent.parent
+        readme = (root / "README.md").read_text()
+        changelog = (root / "CHANGELOG.md").read_text()
+        pyproject = (root / "pyproject.toml").read_text()
+        self.assertIn('authors = [{ name = "PANDeveloper001" }]', pyproject)
+        self.assertNotIn("minor-version change", changelog)
+        for text in (readme, changelog):
+            for needle in ("invalid_api_key", "urllib.request.urlopen", "alphanumeric",
+                           "custom transport"):
+                self.assertIn(needle, text, needle)
+        self.assertIn('"pending": True', readme)
+        self.assertIn("| `invalid_api_key` / `invalid_request` |", readme)

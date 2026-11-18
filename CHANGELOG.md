@@ -2,7 +2,9 @@
 
 ## Unreleased (after 0.1.0)
 
-A minor-version change for `swap.py` callers: behaviour below differs from 0.1.0.
+Not released yet: `pyproject.toml` still says 0.1.0. The behaviour below
+differs from 0.1.0 for `swap.py` callers, so the release that ships it needs a
+new version.
 
 ### Changed
 
@@ -16,6 +18,24 @@ A minor-version change for `swap.py` callers: behaviour below differs from 0.1.0
   `SwapRefused` instead of `urllib.error.HTTPError`/`URLError`. Every such
   refusal is also a `urllib.error.URLError` (and an `OSError`), so
   `except URLError` still catches it; read `exc.reason`, not `exc.code`.
+  That includes `order_unconfirmed` from `create_order` when an HTTP failure
+  caused it. Refusals the module raises on its own (`no_api_key`,
+  `invalid_api_key`, `invalid_swap_pair`, an order's refused terms, a refusal
+  read back from `order_log`) are plain `SwapRefused`.
+- Patching `urllib.request.urlopen` still intercepts the default transport:
+  it is looked up per request and a replaced one is called instead of the
+  network. `agent_wallet_multirail.swap._open` is the narrower patch point.
+- An API key containing whitespace or a non-visible-ASCII character (a
+  trailing newline) is refused `invalid_api_key` before anything is sent; the
+  `order_key` stays free and the key never appears in a message or
+  `order_log`. 0.1.0 raised `http.client`'s `ValueError`, which quoted it.
+- `nanswap_ticker` (now in `__all__`) refuses a currency or network that is
+  not alphanumeric (`invalid_swap_pair`).
+- On `create_order`, an exception a custom transport raises is wrapped:
+  `order_unconfirmed`, or `provider_unreachable` when it proves nothing was
+  sent; the original is the `__cause__`.
+- A retry of a recorded `order_key` no longer reads `limits` first; limits
+  only bound a new order.
 - Redirects are never followed. A 3xx on the create-order POST is
   `order_unconfirmed`, and the `nanswap-api-key` header is never sent to the
   redirect target.

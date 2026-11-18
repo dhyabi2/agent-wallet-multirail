@@ -109,7 +109,7 @@ python3 examples/pay_nano_quote_from_usdc.py refuse   # the shortcut, refused (e
 | `estimate_below_quote` | a swap whose estimated output is under the quote **plus headroom** — spending the USDC on it leaves the payment unmakeable and the USDC gone |
 | `swap_not_received_yet` | sending before the XNO has actually arrived; a one-raw shortfall sends nothing |
 | `exceeds_cap` | more USDC leaving than `max_from_amount`; a swap is custodial for the duration, and this cap is the only real bound |
-| `no_order_log` / `order_key_reused` | buying the swap twice — a retry after a crash reads the recorded order back instead of creating a second. The key is recorded as pending *before* the create-order request is sent, and executing calls on one key are serialised within a process, so neither a crash mid-request nor two threads on one key can create two orders |
+| `no_order_log` / `order_key_reused` | buying the swap twice — a retry after a crash reads the recorded order back instead of creating a second. The key is recorded as pending *before* the create-order request is sent (an entry with `"order": None`, `"pending": True` and a `refused` record whose reason is `order_unconfirmed`; it is overwritten once create-order answers, or removed when the request provably never left), and executing calls on one key are serialised within a process, so neither a crash mid-request nor two threads on one key can create two orders |
 | `order_destination_changed` | an order that came back paying out somewhere other than the account it was created for, or to a string that is not a Nano account at all |
 | `order_terms_changed` | an order that asks for more input than the hop was planned on, or commits to less XNO than the quote. Checked on any provider's order (a `SwapOrder`, any object with its attributes, or a mapping with its keys), and again on read-back from `order_log`. A refused order (or one whose reply cannot be read after `create_order` sent it) is still recorded under the `order_key`, marked refused, because `create_order` may be the call that funds: a retry under that key raises the same refusal and never creates a second order. The provider's own order object is what is recorded and returned |
 | `provider_amount_not_a_string` | an XNO amount that arrived as a JSON number, or an order's expected output given as a `float`: a float cannot hold 30 decimals, so it is already lossy. An order's expected output may be an exact decimal XNO string or a finite `Decimal`; a plain `int` on an order object is refused as `provider_response_unrecognised`, because a bare int amount is the smallest unit everywhere else in this package. (`NanswapProvider` itself reads a JSON integer on the wire — `2` — as its exact digits, since a JSON integer is exact; it is the float form that is lossy) |
@@ -118,6 +118,7 @@ python3 examples/pay_nano_quote_from_usdc.py refuse   # the shortcut, refused (e
 | `provider_refused` | the provider's own "no": a 4xx, or a reply whose body is an error (`{"error": ...}`), with the provider's words in the message. Nothing was created and nothing is recorded, so a retry may ask again — except an error reply to create-order that also carries an order `id`, which is `order_unconfirmed` |
 | `provider_unreachable` | a request that provably never left the machine: connection refused, a host name that did not resolve, a proxy that refused the tunnel. Nothing is recorded and a retry may POST. A timeout, a reset or a reply cut short is *not* this — the request may have arrived — and on create-order is `order_unconfirmed` |
 | `order_unconfirmed` | a second order after a create-order whose outcome is unknown: a 3xx (redirects are never followed, and the API key is never sent to another host), a 5xx, a timeout or dropped connection, an unreadable 2xx reply, an error reply carrying an order id (at any status, 4xx included; the id and the reply are kept in the record), an exception from a custom transport or provider that cannot be classified, or a process that stopped mid-request. The key is recorded and a retry under it raises this again and POSTs nothing; look the order up with the provider before creating another. Once the provider shows no order, `release_pending_order_key(order_log, order_key)` frees the key and the next call plans afresh |
+| `invalid_api_key` / `invalid_request` | a request that cannot be sent as HTTP: an API key with whitespace in it (a trailing newline read from a file or an environment variable), or a header or URL that `http.client` would refuse mid-request. Refused before anything is opened, so nothing is recorded and the `order_key` stays free; the key is refused, never trimmed, and never repeated in any message or `order_log` entry |
 | `order_key_not_releasable` | `release_pending_order_key` on a key that holds a created order (read or refused) or a send: freeing it would buy the swap, or pay the seller, a second time |
 | `order_network_unconfirmed` | funding an order whose reply names a ticker other than the planned one (`from: "USDC-BASE"` on a `USDC-BSC` plan): its pay-in address may be on another chain, and USDC sent on the wrong chain does not come back. A reply with no `from` is read — the request already named the chain |
 
@@ -145,8 +146,25 @@ decimal string. `float` is refused everywhere, in both directions.
   Each one is *also* a `urllib.error.URLError` (so an `OSError`), so an
   existing `except urllib.error.URLError:` fallback still catches it; it is
   not an `HTTPError`, so code reading `exc.code` should read `exc.reason`
-  instead. A custom `transport` is unchanged: what it raises is classified,
-  not wrapped, on the read path.
+  instead. That covers `order_unconfirmed` from `create_order` (and from
+  the hop call that made the request) when an HTTP failure caused it.
+  Refusals this module raises on its own (`no_api_key`, `invalid_api_key`,
+  `invalid_swap_pair`, a refused order's terms, a refusal read back from
+  `order_log`) are plain `SwapRefused`. A custom `transport` is unchanged on
+  the read path: what it raises is classified, not wrapped. On
+  `create_order` it is wrapped: an exception a custom transport raises
+  there becomes `order_unconfirmed` (or `provider_unreachable` when it
+  proves nothing was sent), and the original is the `__cause__`.
+- **Patching `urllib.request.urlopen` still intercepts the default
+  transport.** `urlopen` is looked up on every request, and a replaced one
+  is called instead of the network, so a test suite that mocked it for
+  0.1.0 still never reaches `api.nanswap.com`. `agent_wallet_multirail.swap._open`
+  is the narrower patch point. The unpatched path never follows a redirect.
+- **An API key with whitespace is refused (`invalid_api_key`).** 0.1.0 let
+  `http.client` raise a `ValueError` quoting the key. Nothing is sent and
+  the `order_key` stays free; strip the key where it is read.
+- **`nanswap_ticker` refuses a currency or network that is not
+  alphanumeric** (`invalid_swap_pair`), before any request.
 - **A key left `order_unconfirmed` stays that way until released.** A
   create-order whose outcome is unknown -- including an exception a custom
   provider raises that cannot be classified (a `ValueError`, a requests-style
