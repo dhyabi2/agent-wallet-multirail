@@ -324,11 +324,18 @@ def parse_raw(value, field: str = "amount") -> int:
         if not text.isdigit() or not text.isascii() or (len(text) > 1 and text[0] == "0"):
             raise MandateRefused("invalid_amount", "%s must be a decimal integer string of raw, got %r"
                                  % (field, value))
+        if len(text) > len(str(MAX_RAW)):
+            # Past MAX_RAW whatever its digits, and int() of a string past
+            # 4300 digits is a ValueError on Python 3.11+.
+            raise MandateRefused("invalid_amount", "%s must be between 1 and 2**128-1 raw, got %d "
+                                 "digits" % (field, len(text)))
         n = int(text)
     else:
         raise MandateRefused("invalid_amount", "%s must be an integer count of raw" % field)
     if n <= 0 or n > MAX_RAW:
-        raise MandateRefused("invalid_amount", "%s must be between 1 and 2**128-1 raw, got %d" % (field, n))
+        shown = "%d" % n if n.bit_length() <= 1024 else "an integer of %d bits" % n.bit_length()
+        raise MandateRefused("invalid_amount", "%s must be between 1 and 2**128-1 raw, got %s"
+                             % (field, shown))
     return n
 
 
@@ -348,7 +355,13 @@ def xno_to_raw(text) -> int:
     if not (whole.isdigit() and whole.isascii()) or (dot and not (frac.isdigit() and frac.isascii())) \
             or len(frac) > 30:
         raise MandateRefused("invalid_amount", "%r is not a decimal XNO amount (max 30 decimals)" % text)
-    return int(whole) * RAW_PER_XNO + int(frac.ljust(30, "0") or "0")
+    try:
+        return int(whole) * RAW_PER_XNO + int(frac.ljust(30, "0") or "0")
+    except ValueError:
+        # Python 3.11+ refuses int() of a string past 4300 digits: a refusal,
+        # never a raw ValueError.
+        raise MandateRefused("invalid_amount", "an XNO amount of %d digits is too long to be "
+                             "an amount" % len(whole)) from None
 
 
 def raw_to_xno(raw: int) -> str:

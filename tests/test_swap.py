@@ -2508,3 +2508,293 @@ class SmallDocAndPackagingFixes(unittest.TestCase):
                 self.assertIn(needle, text, needle)
         self.assertIn('"pending": True', readme)
         self.assertIn("| `invalid_api_key` / `invalid_request` |", readme)
+
+
+# ------------------------------------------- review round at 3f6260a (11-19)
+
+
+class _FakeHttps:
+    """A fake ``https_open`` installed with ``urllib.request.install_opener``.
+
+    ``answer(request)`` returns ``(status, headers, body)``. The base URL is a
+    local port nothing listens on, so a request this does not intercept is
+    refused locally and never reaches any real host.
+    """
+
+    BASE = "https://127.0.0.1:9/v1"
+
+    def __init__(self, test, answer):
+        import urllib.request
+        self.seen = []
+        outer = self
+
+        class Handler(urllib.request.HTTPSHandler):
+            def https_open(self, req):
+                import email.message
+                import io
+                import urllib.response
+                outer.seen.append((req.get_method(), req.full_url, dict(req.header_items())))
+                status, headers, body = answer(req)
+                msg = email.message.Message()
+                for name, value in headers.items():
+                    msg[name] = value
+                reply = urllib.response.addinfourl(io.BytesIO(body), msg, req.full_url, status)
+                reply.msg = "fake"
+                return reply
+
+        self.opener = urllib.request.build_opener(Handler)
+        urllib.request.install_opener(self.opener)
+        test.addCleanup(urllib.request.install_opener, None)
+
+
+class AnInstalledOpenerIsHonoured(unittest.TestCase):
+    """user HIGH: a suite mocking with install_opener reached the live API."""
+
+    def test_the_installed_handler_carries_every_request(self):
+        def answer(req):
+            if req.get_method() == "POST":
+                return 200, {}, _ORDER_WIRE
+            if "get-limits" in req.full_url:
+                return 200, {}, b'{"min":1,"max":100}'
+            return 200, {}, b'{"amountTo":"1.5"}'
+        fake = _FakeHttps(self, answer)
+        provider = NanswapProvider(api_key="KEY", base_url=fake.BASE, timeout=5)
+        limits = provider.limits(from_currency="USDC", from_network="BASE")
+        self.assertEqual(limits.min_from_micro, MICRO_PER_USDC)
+        order = provider.create_order(a_plan())
+        self.assertEqual(order.order_id, "ord-int")
+        self.assertEqual([seen[0] for seen in fake.seen], ["GET", "POST"])
+        headers = {k.lower(): v for k, v in fake.seen[1][2].items()}
+        self.assertEqual(headers[NANSWAP_API_KEY_HEADER], "KEY")
+
+    def test_a_redirect_is_still_not_followed_and_the_opener_is_untouched(self):
+        import urllib.request
+
+        def answer(req):
+            if req.get_method() == "POST":
+                return 302, {"Location": "https://127.0.0.1:9/elsewhere"}, b""
+            if "get-limits" in req.full_url:
+                return 200, {}, b'{"min":1,"max":100}'
+            return 200, {}, b'{"amountTo":"1.5"}'
+        fake = _FakeHttps(self, answer)
+        before = [(type(h), h.parent) for h in fake.opener.handlers]
+        provider = NanswapProvider(api_key="SECRET-KEY", base_url=fake.BASE, timeout=5)
+        log = {}
+        for _ in range(2):
+            with self.assertRaises(SwapRefused) as caught:
+                _hop(provider, log)
+            self.assertEqual(caught.exception.reason, "order_unconfirmed")
+        self.assertEqual([seen[0] for seen in fake.seen if seen[0] == "POST"], ["POST"])
+        self.assertEqual([seen for seen in fake.seen if "elsewhere" in seen[1]], [],
+                         "the redirect was followed")
+        self.assertEqual([(type(h), h.parent) for h in fake.opener.handlers], before)
+        self.assertTrue(any(isinstance(h, urllib.request.HTTPRedirectHandler)
+                            and type(h) is urllib.request.HTTPRedirectHandler
+                            for h in fake.opener.handlers))
+
+
+_KEY = "SECRET-KEY-123"
+
+
+class AProviderReplyEchoingTheKeyIsRedacted(unittest.TestCase):
+    """break MEDIUM + LOW: an error reply quoting the key leaked it."""
+
+    def assert_no_key(self, exc, log=None):
+        for text in (str(exc), exc.message, repr(exc), repr(log)):
+            self.assertNotIn(_KEY, text)
+            self.assertNotIn("SECRE", text)
+
+    def test_a_200_error_body_from_a_custom_transport(self):
+        def transport(method, url, headers, body):
+            if method == "POST":
+                return {"error": True, "message": "invalid api key %s" % headers[
+                    NANSWAP_API_KEY_HEADER]}
+            return {"min": "1", "max": "100"} if "get-limits" in url else {"amountTo": "1.5"}
+        log = {}
+        with self.assertRaises(SwapRefused) as caught:
+            _hop(NanswapProvider(api_key=_KEY, transport=transport), log)
+        self.assertEqual(caught.exception.reason, "provider_refused")
+        self.assert_no_key(caught.exception, log)
+
+    def test_a_200_error_body_from_the_default_transport(self):
+        def answer(request):
+            if request.get_method() == "POST":
+                return b'{"error":"invalid api key SECRET-KEY-123"}'
+            return b'{"min":1,"max":100,"amountTo":"1.5"}'
+        provider = _served_by(self, answer)
+        provider._api_key = _KEY
+        with self.assertRaises(SwapRefused) as caught:
+            provider.create_order(a_plan())
+        self.assertEqual(caught.exception.reason, "provider_refused")
+        self.assert_no_key(caught.exception)
+
+    def test_a_200_error_body_with_an_id_is_redacted_in_the_record(self):
+        def transport(method, url, headers, body):
+            if method == "POST":
+                return {"id": "ord-k", "error": "bad key " + _KEY}
+            return {"min": "1", "max": "100"} if "get-limits" in url else {"amountTo": "1.5"}
+        log = {}
+        with self.assertRaises(SwapRefused) as caught:
+            _hop(NanswapProvider(api_key=_KEY, transport=transport), log)
+        self.assertEqual(caught.exception.reason, "order_unconfirmed")
+        self.assertNotIn(_KEY, str(caught.exception))
+        self.assertNotIn(_KEY, repr(log["k1"]["refused"]))
+
+    def test_a_key_straddling_the_200_character_cut(self):
+        for status in (400, 502):
+            with self.subTest(status=status):
+                body = ("A" * 195 + _KEY + " trailing").encode("ascii")
+                provider = _served_by(self, _http_error(status, body))
+                provider._api_key = _KEY
+                with self.assertRaises(SwapRefused) as caught:
+                    provider.create_order(a_plan())
+                self.assert_no_key(caught.exception)
+
+    def test_a_non_json_2xx_reply_quoting_the_key(self):
+        provider = _served_by(self, lambda request: (
+            b"<html>bad key SECRET-KEY-123</html>" if request.get_method() == "POST"
+            else b'{"min":1}'))
+        provider._api_key = _KEY
+        with self.assertRaises(SwapRefused) as caught:
+            provider.create_order(a_plan())
+        self.assertEqual(caught.exception.reason, "order_unconfirmed")
+        self.assert_no_key(caught.exception)
+        cause = caught.exception.__cause__
+        self.assertNotIn(_KEY, repr(getattr(cause, "__dict__", {})))
+        self.assertNotIn(_KEY, repr(caught.exception.__dict__))
+
+
+class The010ExceptionClassIsKept(unittest.TestCase):
+    """user MEDIUM: a 0.1.0 ``except TimeoutError`` / ``ValueError`` still catches."""
+
+    def limits_raising(self, error):
+        def answer(request):
+            raise error
+        return _served_by(self, answer).limits(from_currency="USDC", from_network="BASE")
+
+    def assert_both(self, exc, *classes):
+        import urllib.error
+        self.assertIsInstance(exc, SwapRefused)
+        self.assertIsInstance(exc, urllib.error.URLError)
+        self.assertNotIsInstance(exc, urllib.error.HTTPError)
+        for cls in classes:
+            self.assertIsInstance(exc, cls)
+
+    def test_a_read_timeout(self):
+        import socket
+        with self.assertRaises(TimeoutError) as caught:
+            self.limits_raising(socket.timeout("timed out"))
+        self.assert_both(caught.exception, TimeoutError, OSError)
+        self.assertEqual(caught.exception.reason, "provider_unreachable")
+        self.assertTrue(caught.exception.ambiguous)
+
+    def test_http_client_exceptions(self):
+        import http.client
+        with self.assertRaises(http.client.HTTPException) as caught:
+            self.limits_raising(http.client.RemoteDisconnected("closed"))
+        self.assert_both(caught.exception, http.client.RemoteDisconnected,
+                         ConnectionResetError)
+        with self.assertRaises(http.client.IncompleteRead) as caught:
+            self.limits_raising(http.client.IncompleteRead(b"par", 10))
+        self.assert_both(caught.exception, http.client.HTTPException)
+        self.assertEqual(caught.exception.expected, 10)
+
+    def test_a_reply_that_is_not_json_or_not_utf8(self):
+        provider = _served_by(self, lambda request: b"<html>ok</html>")
+        with self.assertRaises(json.JSONDecodeError) as caught:
+            provider.limits(from_currency="USDC", from_network="BASE")
+        self.assert_both(caught.exception, ValueError)
+        self.assertEqual(caught.exception.reason, "provider_response_unrecognised")
+        provider = _served_by(self, lambda request: b'{"min":"1\xff"}')
+        with self.assertRaises(ValueError) as caught:
+            provider.limits(from_currency="USDC", from_network="BASE")
+        self.assert_both(caught.exception, ValueError)
+
+    def test_order_unconfirmed_keeps_the_class(self):
+        import socket
+        provider = _served_by(self, lambda request: (_ for _ in ()).throw(
+            socket.timeout("timed out")))
+        with self.assertRaises(TimeoutError) as caught:
+            provider.create_order(a_plan())
+        self.assert_both(caught.exception, TimeoutError)
+        self.assertEqual(caught.exception.reason, "order_unconfirmed")
+        self.assertTrue(caught.exception.order["unconfirmed"])
+
+    def test_a_connect_refusal_is_unchanged(self):
+        import urllib.error
+        with self.assertRaises(urllib.error.URLError) as caught:
+            self.limits_raising(urllib.error.URLError(ConnectionRefusedError(111, "refused")))
+        self.assertEqual(caught.exception.reason, "provider_unreachable")
+        self.assertFalse(caught.exception.ambiguous)
+
+
+class AnAmountPastTheIntDigitLimitIsARefusal(unittest.TestCase):
+    """break LOW: a 4300+ digit amount string escaped as a raw ValueError."""
+
+    HUGE = "1" * 5000
+
+    def test_the_converters(self):
+        with self.assertRaises(SwapRefused) as caught:
+            usdc_to_micro(self.HUGE)
+        self.assertEqual(caught.exception.reason, "invalid_amount")
+        for call in (lambda: mandate.xno_to_raw(self.HUGE),
+                     lambda: mandate.parse_raw(self.HUGE),
+                     lambda: mandate.parse_raw(10 ** 5000)):
+            with self.assertRaises(mandate.MandateRefused) as caught:
+                call()
+            self.assertEqual(caught.exception.reason, "invalid_amount")
+
+    def test_an_order_reply_is_recorded_with_its_id(self):
+        for field_name in ("expectedAmountFrom", "expectedAmountTo"):
+            with self.subTest(field=field_name):
+                reply = {"id": "ord-huge", "payinAddress": "0xabc",
+                         "payoutAddress": mandate.normalise_address(AGENT),
+                         "expectedAmountTo": "2", "expectedAmountFrom": "2"}
+                reply[field_name] = self.HUGE
+                posts = []
+
+                def transport(method, url, headers, body, reply=reply):
+                    if method == "POST":
+                        posts.append(url)
+                        return dict(reply)
+                    return {"min": "1", "max": "100"} if "get-limits" in url \
+                        else {"amountTo": "1.5"}
+                provider, log = NanswapProvider(api_key="KEY", transport=transport), {}
+                for _ in range(2):
+                    with self.assertRaises(SwapRefused):
+                        _hop(provider, log)
+                self.assertEqual(len(posts), 1)
+                order = log["k1"]["order"]
+                order_id = order["order_id"] if isinstance(order, dict) else order.order_id
+                self.assertEqual(order_id, "ord-huge")
+
+
+class TheDocsSayWhatChangedAt3f6260a(unittest.TestCase):
+    """user/break LOWs: URLError scope, order_network_unconfirmed, parse_float, classes."""
+
+    def test_docs(self):
+        import pathlib
+        from agent_wallet_multirail import swap
+        root = pathlib.Path(__file__).resolve().parent.parent
+        readme = (root / "README.md").read_text()
+        changelog = (root / "CHANGELOG.md").read_text()
+        upgrading = readme.split("### Upgrading from 0.1.0", 1)[1]
+        for text in (upgrading, changelog):
+            for needle in ("install_opener", "parse_float=str", "TimeoutError",
+                           "json.JSONDecodeError", "http.client.HTTPException",
+                           "order_network_unconfirmed", "provider_response_unrecognised",
+                           "HTTP 200", "4300"):
+                self.assertIn(needle, text, needle)
+        for needle in ("HTTP 200", "provider_response_unrecognised", "TimeoutError"):
+            self.assertIn(needle, swap.SwapRefused.__doc__, needle)
+
+    def test_the_200_error_body_and_a_bad_shape_are_plain_swap_refusals(self):
+        import urllib.error
+        for body, reason in ((b'{"error":true,"message":"Not available"}', "provider_refused"),
+                             (b'{"nothing":1}', "provider_response_unrecognised")):
+            with self.subTest(reason=reason):
+                provider = _served_by(self, lambda request, body=body: body)
+                with self.assertRaises(SwapRefused) as caught:
+                    provider.limits(from_currency="USDC", from_network="BASE")
+                self.assertEqual(caught.exception.reason, reason)
+                self.assertNotIsInstance(caught.exception, urllib.error.URLError)

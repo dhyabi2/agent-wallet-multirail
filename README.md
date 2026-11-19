@@ -150,16 +150,50 @@ decimal string. `float` is refused everywhere, in both directions.
   the hop call that made the request) when an HTTP failure caused it.
   Refusals this module raises on its own (`no_api_key`, `invalid_api_key`,
   `invalid_swap_pair`, a refused order's terms, a refusal read back from
-  `order_log`) are plain `SwapRefused`. A custom `transport` is unchanged on
+  `order_log`) are plain `SwapRefused`. So are two that come from a reply
+  that *was* read: `provider_refused` for an error body that came with
+  HTTP 200 (`{"error": true, "message": ...}`; the same reason for an HTTP
+  4xx/5xx status *is* a `URLError`), and `provider_response_unrecognised`
+  for a JSON reply missing a field or carrying the wrong type (0.1.0 also
+  raised a plain `SwapRefused` for those). A custom `transport` is unchanged on
   the read path: what it raises is classified, not wrapped. On
   `create_order` it is wrapped: an exception a custom transport raises
   there becomes `order_unconfirmed` (or `provider_unreachable` when it
   proves nothing was sent), and the original is the `__cause__`.
+- **The exception 0.1.0 let through is still in the refusal's type.** 0.1.0
+  let a read `TimeoutError` (`socket.timeout`), a `ConnectionResetError`,
+  `http.client.HTTPException` (`IncompleteRead`, `RemoteDisconnected`),
+  `json.JSONDecodeError` (a reply that is not JSON) and `UnicodeDecodeError`
+  escape the default transport. Each is now a `SwapRefused` (and a
+  `URLError`) that is *also* an instance of that original class (for
+  `UnicodeDecodeError`, of `ValueError`), so `except TimeoutError`, `except
+  ValueError` and `except http.client.HTTPException` still catch it, and
+  the original is the `__cause__`. That includes `order_unconfirmed` from
+  `create_order` when one of these caused it.
+- **Amounts on the wire keep their exact text.** The default transport
+  parses JSON with `parse_float=str`, so a JSON number such as
+  `15.458333333333334` arrives as that string, never as a float.
+  `SwapOrder.raw` (and the `raw` kept in `order_log`) therefore holds such
+  numbers as strings where 0.1.0 held floats; JSON integers stay `int`.
 - **Patching `urllib.request.urlopen` still intercepts the default
   transport.** `urlopen` is looked up on every request, and a replaced one
   is called instead of the network, so a test suite that mocked it for
-  0.1.0 still never reaches `api.nanswap.com`. `agent_wallet_multirail.swap._open`
-  is the narrower patch point. The unpatched path never follows a redirect.
+  0.1.0 still never reaches `api.nanswap.com`. An opener installed with
+  `urllib.request.install_opener` (a fake `https_open` handler, a custom CA,
+  a proxy, an auth handler) is used as 0.1.0 used it: its handlers carry the
+  request, with the redirect handler replaced so no redirect is followed,
+  and the installed opener itself is not modified.
+  `agent_wallet_multirail.swap._open` is the narrower patch point. The
+  unpatched path never follows a redirect.
+- **An order reply naming another chain is refused
+  (`order_network_unconfirmed`).** New: a create-order reply whose `from`
+  names a ticker other than the planned one is never funded, and the
+  order is recorded under the `order_key` so a retry creates no second one.
+- **An amount too long to be one is refused.** A decimal amount string past
+  Python's 4300-digit `int()` limit (in `usdc_to_micro`, `xno_to_raw`,
+  `parse_raw` or an order reply) is refused `invalid_amount` /
+  `provider_response_unrecognised` instead of escaping as a `ValueError`; in
+  an order reply the order is recorded under the `order_key`.
 - **An API key with whitespace is refused (`invalid_api_key`).** 0.1.0 let
   `http.client` raise a `ValueError` quoting the key. Nothing is sent and
   the `order_key` stays free; strip the key where it is read.
